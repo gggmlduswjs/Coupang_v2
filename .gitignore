@@ -1,0 +1,85 @@
+# ===== Environment / Credentials =====
+.env
+.env.*
+!.env.example
+
+# ===== Database =====
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+*.egg
+
+# ===== Data (런타임) =====
+data/html_cache/
+data/backups/
+data/chrome_profile/
+data/*.json
+
+# ===== Reports (생성물) =====
+reports/*.xlsx
+reports/*.csv
+
+# ===== Logs =====
+logs/
+*.log
+
+# ===== IDE =====
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+nul
+
+# ===== Streamlit =====
+.streamlit/
+
+# ===== Playwright =====
+playwright-state/
+test-results/
+screenshots/
+
+# ===== Testing =====
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# ===== Backup / Temp =====
+*.bak
+~$*
+_archive/
+
+# ===== Claude Code =====
+.claude/projects/
+
+# ===== Celery =====
+celerybeat-schedule
+celerybeat.pid
+
+# ===== Obsidian local copy =====
+obsidian_vault/
+
+# ===== 임시 디버그 =====
+scripts/_*_result.txt
