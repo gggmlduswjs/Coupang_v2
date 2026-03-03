@@ -185,14 +185,20 @@ def bulk_upsert(rows: list[tuple]) -> int:
 
 
 def delete_removed_products(account_id: int, valid_spids: set, synced_at: datetime):
-    """캐시에 없는 상품 삭제 (FK 참조 및 판매이력 있는 것 제외)"""
+    """캐시에 없는 상품 삭제 (orders / returns / revenue_history 참조 및 판매이력 있는 것 제외)"""
     with engine.connect() as conn:
         deleted = conn.execute(text("""
             DELETE FROM listings
             WHERE account_id = :aid
               AND coupang_product_id NOT IN :spids
               AND COALESCE(sold_quantity, 0) = 0
-              AND id NOT IN (SELECT listing_id FROM return_requests WHERE listing_id IS NOT NULL)
+              AND id NOT IN (
+                  SELECT listing_id FROM orders WHERE listing_id IS NOT NULL
+                  UNION ALL
+                  SELECT listing_id FROM return_requests WHERE listing_id IS NOT NULL
+                  UNION ALL
+                  SELECT listing_id FROM revenue_history WHERE listing_id IS NOT NULL
+              )
         """), {"aid": account_id, "spids": tuple(valid_spids) if valid_spids else (-1,)})
         conn.commit()
         return deleted.rowcount
@@ -236,6 +242,12 @@ def main():
 
         n = bulk_upsert(all_rows)
         total_rows += n
+
+        # 캐시에 없는 구형 상품 삭제 (orphan 방지)
+        deleted = delete_removed_products(account_id, valid_spids, synced_at)
+        total_deleted += deleted
+        if deleted:
+            logger.info(f"  [{account_name}] 구형 orphan 삭제: {deleted}건")
 
     # 최종 커버리지
     with engine.connect() as conn:
