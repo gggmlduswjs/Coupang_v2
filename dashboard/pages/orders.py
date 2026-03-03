@@ -146,7 +146,7 @@ def _save_ordersheets_to_db(acct, ordersheets, status):
                             "canceled": bool(item.get("canceled", False)),
                             "listing_id": None,
                             "raw_json": json.dumps(os_data, ensure_ascii=False, default=str)[:5000],
-                            "updated_at": datetime.utcnow().isoformat(),
+                            "updated_at": datetime.now().isoformat(),
                         }
                         try:
                             conn.execute(sa_text(_UPSERT_ORDER_SQL), params)
@@ -260,14 +260,6 @@ def render(selected_account, accounts_df, account_names):
         _load_all_orders_from_db.clear()
         st.cache_data.clear()
 
-    # ── DB 마지막 업데이트 시각 조회 ──
-    @st.cache_data(ttl=60)
-    def _get_last_db_updated():
-        row = query_df("SELECT MAX(updated_at) AS t FROM orders")
-        if row.empty or row.iloc[0]["t"] is None:
-            return None
-        return str(row.iloc[0]["t"])[:16]
-
     # ── 상단 컨트롤 ──
     import time as _time
     _top_c1, _top_c2 = st.columns([2, 5])
@@ -277,13 +269,14 @@ def render(selected_account, accounts_df, account_names):
             with st.spinner("WING API 조회 중... (1~2분 소요)"):
                 _synced = _sync_live_orders()
             _clear_order_caches()
+            st.session_state["order_last_synced"] = datetime.now().strftime("%H:%M:%S")
             st.success(f"완료: {_synced}건 갱신")
             _time.sleep(0.5)
             st.rerun()
     with _top_c2:
-        _last_updated = _get_last_db_updated()
-        if _last_updated:
-            st.caption(f"DB 마지막 업데이트: {_last_updated} | 2시간마다 자동 동기화")
+        _last_synced = st.session_state.get("order_last_synced")
+        if _last_synced:
+            st.caption(f"마지막 동기화: {_last_synced} | 2시간마다 자동 동기화")
 
     # ── 공통 유틸 ──
     _status_map = {

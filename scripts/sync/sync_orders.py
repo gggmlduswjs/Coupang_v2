@@ -243,7 +243,7 @@ class OrderSync:
                             "canceled": bool(item.get("canceled", False)),
                             "listing_id": None,
                             "raw_json": json.dumps(os_data, ensure_ascii=False, default=str)[:5000],
-                            "updated_at": datetime.utcnow().isoformat(),
+                            "updated_at": datetime.now().isoformat(),
                         }
 
                         try:
