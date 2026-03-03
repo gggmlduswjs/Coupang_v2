@@ -5,6 +5,7 @@ Wing 셀러센터 바로가기
 - Streamlit Cloud: 북마클릿 + PW 복사 방식
 """
 import sys
+import json
 import time
 import threading
 import streamlit as st
@@ -136,6 +137,96 @@ def _open_all_with_playwright(creds: dict, names: list) -> tuple[int, list[str]]
 # Cloud 전용: 북마클릿 + PW 복사 카드
 # ─────────────────────────────────────────
 
+def _launcher_buttons_html(names: list) -> str:
+    """
+    Cloud/로컬 공통 — JavaScript fetch → localhost:8888 (Wing Launcher)
+    Launcher가 실행 중이면 Chrome 자동 열기, 아니면 안내 표시
+    """
+    names_js = json.dumps(names)
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif;font-size:14px;}}
+body{{padding:4px;}}
+#status{{padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:12px;}}
+.ok{{background:#d1e7dd;color:#0a3622;}}
+.ng{{background:#f8d7da;color:#58151c;}}
+.checking{{background:#fff3cd;color:#664d03;}}
+.grid{{display:flex;flex-wrap:wrap;gap:6px;}}
+.btn-all{{width:100%;height:44px;background:#E4002B;color:#fff;border:none;
+  border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:8px;}}
+.btn-all:hover{{opacity:.85;}}
+.btn-one{{flex:1;min-width:80px;height:36px;background:#fff;color:#333;
+  border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;}}
+.btn-one:hover{{background:#f5f5f5;}}
+.btn-all:disabled,.btn-one:disabled{{opacity:.4;cursor:not-allowed;}}
+</style></head>
+<body>
+<div id="status" class="checking">⏳ Wing Launcher 확인 중...</div>
+<button class="btn-all" id="btnAll" onclick="openAll()" disabled>🚀 5개 계정 전부 열기</button>
+<div class="grid" id="grid"></div>
+
+<script>
+const NAMES = {names_js};
+const BASE = 'http://localhost:8888';
+let launcherOk = false;
+
+// 개별 버튼 생성
+const grid = document.getElementById('grid');
+NAMES.forEach(n => {{
+  const b = document.createElement('button');
+  b.className = 'btn-one'; b.id = 'btn_' + n;
+  b.textContent = n; b.disabled = true;
+  b.onclick = () => openOne(n);
+  grid.appendChild(b);
+}});
+
+function setEnabled(ok) {{
+  launcherOk = ok;
+  document.getElementById('btnAll').disabled = !ok;
+  NAMES.forEach(n => {{ const b = document.getElementById('btn_'+n); if(b) b.disabled = !ok; }});
+}}
+
+function showStatus(msg, cls) {{
+  const el = document.getElementById('status');
+  el.textContent = msg; el.className = cls;
+}}
+
+// Launcher 상태 확인
+fetch(BASE + '/ping', {{mode:'cors'}})
+  .then(r => r.json())
+  .then(d => {{
+    showStatus('✅ Wing Launcher 실행 중 — 버튼을 누르면 Chrome이 열려요', 'ok');
+    setEnabled(true);
+  }})
+  .catch(() => {{
+    showStatus('❌ Wing Launcher 미실행 — wing_launcher_start.bat 을 먼저 실행하세요', 'ng');
+    setEnabled(false);
+  }});
+
+function openAll() {{
+  document.getElementById('btnAll').textContent = '⏳ 열고 있어요...';
+  fetch(BASE + '/open-all', {{mode:'cors'}})
+    .then(r => r.json())
+    .then(d => {{
+      document.getElementById('btnAll').textContent = '✅ ' + d.opened.length + '개 열림!';
+      setTimeout(() => document.getElementById('btnAll').textContent = '🚀 5개 계정 전부 열기', 3000);
+    }})
+    .catch(() => showStatus('❌ Launcher 연결 실패', 'ng'));
+}}
+
+function openOne(name) {{
+  const b = document.getElementById('btn_' + name);
+  b.textContent = '⏳';
+  fetch(BASE + '/open/' + name, {{mode:'cors'}})
+    .then(r => r.json())
+    .then(() => {{ b.textContent = '✅ ' + name; setTimeout(() => b.textContent = name, 2000); }})
+    .catch(() => {{ b.textContent = '❌'; setTimeout(() => b.textContent = name, 2000); }});
+}}
+</script>
+</body></html>"""
+
+
 def _card_html(account_name: str, wing_id: str, wing_pw: str) -> str:
     eid  = wing_id.replace("'", "\\'").replace("`", "\\`")
     epw  = wing_pw.replace("'", "\\'").replace("`", "\\`")
@@ -225,7 +316,18 @@ def render(selected_account, accounts_df, account_names):
     creds = _load_creds()
 
     # ════════════════════════════════════════
-    # 로컬 PC 모드: Playwright 동시 자동 로그인
+    # Wing Launcher 버튼 (Cloud/로컬 공통)
+    # ════════════════════════════════════════
+    st.subheader("🚀 Wing 자동 열기")
+
+    # Launcher 상태 확인 + 전체/개별 열기 버튼 (JavaScript fetch → localhost:8888)
+    launcher_html = _launcher_buttons_html(names)
+    components.html(launcher_html, height=200)
+
+    st.divider()
+
+    # ════════════════════════════════════════
+    # 로컬 PC 모드: Playwright 동시 자동 로그인 (추가 옵션)
     # ════════════════════════════════════════
     if _IS_LOCAL:
         st.subheader("🖥️ 로컬 자동 실행")
