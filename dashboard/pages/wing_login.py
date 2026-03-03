@@ -36,19 +36,18 @@ def _match_cred(creds: dict, account_name: str) -> dict:
 
 def _login_iframe(account_name: str, wing_id: str, wing_pw: str) -> str:
     """
-    Wing 로그인 폼을 자동 제출하는 iframe HTML.
-    사용자가 버튼을 클릭하면 새 탭에서 wing.coupang.com/login 으로 POST.
-    (브라우저 팝업차단 우회: 직접 클릭 이벤트에서 열어야 동작)
+    버튼 클릭 → Wing 새 탭 열기 + PW 클립보드 복사
+    (Akamai 보안으로 form POST가 차단되어 이 방식 사용)
     """
-    safe_id = str(wing_id).replace('"', "&quot;").replace("'", "&#39;")
-    safe_pw = str(wing_pw).replace('"', "&quot;").replace("'", "&#39;")
+    safe_id = str(wing_id).replace("'", "\\'").replace('"', '\\"')
+    safe_pw = str(wing_pw).replace("'", "\\'").replace('"', '\\"')
     safe_name = str(account_name).replace("<", "").replace(">", "")
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
   * {{box-sizing:border-box;margin:0;padding:0;}}
-  body {{padding:2px;}}
-  button {{
+  body {{padding:2px;font-family:sans-serif;}}
+  .btn {{
     width:100%;height:44px;
     background:#E4002B;color:#fff;
     border:none;border-radius:8px;
@@ -56,16 +55,22 @@ def _login_iframe(account_name: str, wing_id: str, wing_pw: str) -> str:
     cursor:pointer;letter-spacing:0.3px;
     transition:opacity .15s;
   }}
-  button:hover {{opacity:.85;}}
-  button:active {{opacity:.7;}}
+  .btn:hover {{opacity:.85;}}
+  .msg {{
+    display:none;margin-top:4px;
+    font-size:12px;color:#555;text-align:center;
+  }}
 </style>
 </head>
 <body>
-<form method="POST" action="https://wing.coupang.com/login" target="_blank">
-  <input type="hidden" name="username" value="{safe_id}">
-  <input type="hidden" name="password" value="{safe_pw}">
-  <button type="submit">🚀 Wing 열기 — {safe_name}</button>
-</form>
+<button class="btn" onclick="
+  navigator.clipboard.writeText('{safe_pw}').catch(()=>{{}});
+  window.open('https://wing.coupang.com','_blank');
+  document.getElementById('msg').style.display='block';
+  this.textContent='✅ Wing 열림 — PW 복사됨';
+  setTimeout(()=>this.textContent='🚀 Wing 열기 — {safe_name}', 3000);
+">🚀 Wing 열기 — {safe_name}</button>
+<div class="msg" id="msg">ID: <b>{safe_id}</b> · PW가 클립보드에 복사됐습니다</div>
 </body></html>"""
 
 
@@ -162,26 +167,12 @@ def render(selected_account, accounts_df, account_names):
                 st.caption(f"Vendor: `{vendor_id}`")
 
                 if wing_id and wing_pw:
-                    # ── 자동 로그인 버튼 (iframe 내 직접 클릭) ──
+                    # 버튼 클릭 → Wing 열기 + PW 클립보드 복사
                     components.html(
                         _login_iframe(name, wing_id, wing_pw),
-                        height=52,
+                        height=72,
                     )
-                    st.divider()
-
-                    # ID 표시 + PW 복사용
-                    st.caption("ID")
-                    st.code(wing_id, language=None)
-                    st.caption("PW (복사용 — 클릭하면 클립보드에 복사)")
-                    # PW는 보안상 직접 표시 안 함 — 복사 버튼만
-                    copy_js = f"""
-                    <button onclick="navigator.clipboard.writeText('{wing_pw.replace(chr(39), '')}');
-                      this.textContent='✅ 복사됨!';setTimeout(()=>this.textContent='📋 PW 복사',1500);"
-                      style="padding:6px 14px;border:1px solid #ddd;border-radius:6px;
-                             background:#f8f9fa;cursor:pointer;font-size:13px;width:100%;">
-                      📋 PW 복사
-                    </button>"""
-                    components.html(copy_js, height=36)
+                    st.caption(f"ID: `{wing_id}`")
 
                 else:
                     st.link_button(
