@@ -902,24 +902,60 @@ def render(selected_account, accounts_df, account_names):
 
             _dl_df = pd.DataFrame(_dl_rows)
 
-            # 엑셀 생성 — 묶음배송번호/주문번호를 텍스트로 저장 (지수 표기 방지)
+            # ── 책별 픽킹 요약 표시 ──
+            _pick_summary = (
+                _dl_df.groupby("등록상품명")
+                .agg(건수=("묶음배송번호", "count"), 총수량=("구매수(수량)", "sum"))
+                .sort_values("건수", ascending=False)
+                .reset_index()
+            )
+            _pick_summary.columns = ["도서명", "주문건수", "총수량"]
+            with st.expander(f"📚 책별 픽킹 요약 ({len(_pick_summary)}종)", expanded=True):
+                st.dataframe(_pick_summary, hide_index=True, use_container_width=True,
+                             column_config={"도서명": st.column_config.TextColumn(width="large")})
+
+            # 책 이름 순 정렬 (같은 책끼리 묶임) → 번호 재부여
+            _dl_df = _dl_df.sort_values(["등록상품명", "묶음배송번호"]).reset_index(drop=True)
+            _dl_df["번호"] = range(1, len(_dl_df) + 1)
+
+            # 엑셀 생성 — Sheet1: 배송리스트(책 순 정렬), Sheet2: 픽킹리스트
             _dl_buf = io.BytesIO()
             with pd.ExcelWriter(_dl_buf, engine="openpyxl") as writer:
+                # Sheet1: 한진 업로드용 배송리스트
                 _dl_df.to_excel(writer, sheet_name="Delivery", index=False)
                 ws = writer.sheets["Delivery"]
                 from openpyxl.utils import get_column_letter
+                from openpyxl.styles import PatternFill, Font
+                # 텍스트 포맷 (지수 표기 방지)
                 for col_name in ["묶음배송번호", "주문번호", "노출상품ID", "옵션ID"]:
                     if col_name in _dl_df.columns:
-                        col_idx = _dl_df.columns.get_loc(col_name)  # 0-based
-                        col_letter = get_column_letter(col_idx + 1)  # 1-based for Excel
-                        for row_idx in range(2, len(_dl_df) + 2):  # 2~N+1 (header=1)
+                        col_idx = _dl_df.columns.get_loc(col_name)
+                        col_letter = get_column_letter(col_idx + 1)
+                        for row_idx in range(2, len(_dl_df) + 2):
                             cell = ws[f"{col_letter}{row_idx}"]
                             cell.value = str(int(cell.value)) if cell.value is not None else ""
                             cell.number_format = "@"
+                # 같은 책 첫 행에 색상 표시 (눈에 띄게)
+                _prev_book = None
+                _fill = PatternFill(start_color="D9E8FB", end_color="D9E8FB", fill_type="solid")
+                _book_col_idx = _dl_df.columns.get_loc("등록상품명") + 1
+                for row_idx, book in enumerate(_dl_df["등록상품명"], start=2):
+                    if book != _prev_book:
+                        for c in range(1, len(_dl_df.columns) + 1):
+                            ws.cell(row=row_idx, column=c).fill = _fill
+                        _prev_book = book
+
+                # Sheet2: 픽킹 리스트 (출력용)
+                _pick_summary.to_excel(writer, sheet_name="픽킹리스트", index=False)
+                ws2 = writer.sheets["픽킹리스트"]
+                ws2.column_dimensions["A"].width = 60
+                ws2.column_dimensions["B"].width = 12
+                ws2.column_dimensions["C"].width = 12
+
             _dl_buf.seek(0)
 
             st.download_button(
-                f"통합 배송리스트 다운로드 ({len(_dl_orders)}건)",
+                f"📦 배송리스트 다운로드 ({len(_dl_orders)}건, 책별 정렬)",
                 _dl_buf.getvalue(),
                 file_name=f"DeliveryList({date.today().isoformat()})_통합.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -927,7 +963,7 @@ def render(selected_account, accounts_df, account_names):
                 type="primary",
                 use_container_width=True,
             )
-            st.caption("한진택배 프로그램에 업로드 → 송장번호 받은 뒤 → STEP 3에서 등록")
+            st.caption("Sheet1: 한진택배 업로드용 (책 순 정렬) | Sheet2: 픽킹리스트 | 송장번호 받은 뒤 → STEP 3")
 
         st.divider()
 
