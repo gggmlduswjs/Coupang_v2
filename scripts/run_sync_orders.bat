@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv('.env')
 from scripts.sync.sync_orders import OrderSync
 syncer = OrderSync()
-results = syncer.sync_all(days=3)
+results = syncer.sync_all(days=1)
 total_f = sum(r.get('fetched', 0) for r in results)
 total_u = sum(r.get('upserted', 0) for r in results)
 print(f'주문 동기화: {len(results)}계정, 조회 {total_f}건, 저장 {total_u}건')

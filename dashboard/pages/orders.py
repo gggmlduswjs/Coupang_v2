@@ -163,10 +163,9 @@ def _save_ordersheets_to_db(acct, ordersheets, status):
 def render(selected_account, accounts_df, account_names):
     st.title("주문 관리")
 
-    # ── 5분 자동 폴링 ──
-    # 300_000ms = 5분마다 자동 rerun → _load_all_orders_from_db TTL 30초와 맞물려
-    # 백그라운드 동기화 결과가 자동 반영됨
-    _refresh_count = st_autorefresh(interval=300_000, key="order_autorefresh", debounce=False)
+    # ── 10분 자동 화면 새로고침 (DB 변경사항 반영) ──
+    # 실제 동기화는 Windows 작업 스케줄러(CoupangBiz_sync_orders)가 2시간마다 수행
+    _refresh_count = st_autorefresh(interval=600_000, key="order_autorefresh", debounce=False)
 
     # ── DB 기반 주문 조회 (단일 쿼리, 즉시 로드) ──
 
@@ -261,36 +260,30 @@ def render(selected_account, accounts_df, account_names):
         _load_all_orders_from_db.clear()
         st.cache_data.clear()
 
-    # ── 페이지 최초 진입 시 자동 동기화 (엄마가 버튼 안 눌러도 최신 주문 보임) ──
-    _AUTO_SYNC_KEY = "order_auto_synced_today"
-    import time as _time
-    _auto_sync_ts = st.session_state.get(_AUTO_SYNC_KEY, 0)
-    _AUTO_INTERVAL = 1800  # 30분마다 자동 동기화
-    if _time.time() - _auto_sync_ts > _AUTO_INTERVAL:
-        with st.spinner("주문 데이터 최신화 중..."):
-            try:
-                _sync_live_orders()
-                _clear_order_caches()
-                st.session_state[_AUTO_SYNC_KEY] = _time.time()
-            except Exception:
-                pass  # 자동 동기화 실패 시 조용히 넘어감
+    # ── DB 마지막 업데이트 시각 조회 ──
+    @st.cache_data(ttl=60)
+    def _get_last_db_updated():
+        row = query_df("SELECT MAX(updated_at) AS t FROM orders")
+        if row.empty or row.iloc[0]["t"] is None:
+            return None
+        return str(row.iloc[0]["t"])[:16]
 
     # ── 상단 컨트롤 ──
+    import time as _time
     _top_c1, _top_c2 = st.columns([2, 5])
     with _top_c1:
         if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
                      help="WING API에서 최근 7일 주문 즉시 조회", type="primary"):
-            with st.spinner("WING API 조회 중..."):
+            with st.spinner("WING API 조회 중... (1~2분 소요)"):
                 _synced = _sync_live_orders()
             _clear_order_caches()
-            st.session_state[_AUTO_SYNC_KEY] = _time.time()
             st.success(f"완료: {_synced}건 갱신")
             _time.sleep(0.5)
             st.rerun()
     with _top_c2:
-        _last_synced = st.session_state.get("order_last_synced", None)
-        if _last_synced:
-            st.caption(f"마지막 동기화: {_last_synced} | 30분마다 자동 갱신")
+        _last_updated = _get_last_db_updated()
+        if _last_updated:
+            st.caption(f"DB 마지막 업데이트: {_last_updated} | 2시간마다 자동 동기화")
 
     # ── 공통 유틸 ──
     _status_map = {
@@ -567,11 +560,7 @@ def render(selected_account, accounts_df, account_names):
                     _load_all_orders_from_db.clear()
                     st.rerun()
             with _po_col3:
-                _po_last = st.session_state.get("order_last_synced")
-                if _po_last:
-                    st.caption(f"마지막 동기화: {_po_last}")
-                else:
-                    st.caption("자동 동기화: 30분 주기")
+                st.caption("2시간마다 자동 동기화")
 
             # 상품준비중(INSTRUCT)만 발주서 대상
             _dist_orders = _instruct_all.copy() if not _instruct_all.empty else pd.DataFrame()
