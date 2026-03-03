@@ -192,25 +192,17 @@ def render(selected_account, accounts_df, account_names):
         wing_pw = cred.get("pw", "")
 
         with cols[i % col_count]:
-            with st.container(border=True):
-                st.markdown(f"#### {name}")
-                st.caption(f"Vendor: `{vendor_id}`")
-
-                if wing_id and wing_pw:
-                    components.html(
-                        _card_html(name, wing_id, wing_pw),
-                        height=110,
-                    )
-                    st.caption(f"ID: `{wing_id}`")
-
-                else:
-                    st.link_button(
-                        "Wing 열기 →",
-                        "https://wing.coupang.com",
-                        use_container_width=True,
-                        key=f"_card_wing_{name}",
-                    )
-                    st.warning("⚠️ ID/PW가 설정되지 않았습니다.\n위 설정 패널에서 입력하세요.")
+            st.markdown(f"**{name}** `{vendor_id}`")
+            if wing_id and wing_pw:
+                components.html(
+                    _card_html(name, wing_id, wing_pw),
+                    height=110,
+                )
+                st.caption(f"ID: `{wing_id}`")
+            else:
+                st.markdown(f"[Wing 열기 →](https://wing.coupang.com)")
+                st.warning("⚠️ ID/PW 미설정")
+            st.divider()
 
     # ── 안내 ──────────────────────────────────────────────
     st.divider()
