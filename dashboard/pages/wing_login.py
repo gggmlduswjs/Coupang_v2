@@ -1,13 +1,11 @@
 """
 Wing 셀러센터 바로가기
 ======================
-- 로컬 PC: Playwright로 5개 계정 크롬 창 동시 자동 로그인
-- Streamlit Cloud: 북마클릿 + PW 복사 방식
+wing:// 커스텀 프로토콜로 Chrome 자동 열기
+Wing자동로그인.exe 최초 1회 실행으로 등록
 """
 import sys
 import json
-import time
-import threading
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -46,101 +44,13 @@ def _match_cred(creds: dict, account_name: str) -> dict:
 
 
 # ─────────────────────────────────────────
-# 로컬 전용: Playwright 자동 로그인
-# ─────────────────────────────────────────
-
-def _pw_open_one(name: str, wing_id: str, wing_pw: str, result_box: dict):
-    """단일 계정 크롬 창 열기 (별도 스레드에서 실행)"""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        result_box[name] = "playwright 미설치"
-        return
-
-    pw = sync_playwright().start()
-    try:
-        browser = pw.chromium.launch(
-            headless=False,
-            channel="chrome",           # 설치된 Chrome 사용
-            args=["--new-window"],
-        )
-        ctx = browser.new_context(no_viewport=True)
-        page = ctx.new_page()
-        page.goto("https://wing.coupang.com/login", wait_until="domcontentloaded")
-        page.wait_for_selector("input[type='password']", timeout=15000)
-
-        # ID 필드 — text / email / tel 순서로 첫 번째 찾기
-        for sel in ["input[type='text']", "input[type='email']", "input[type='tel']"]:
-            el = page.query_selector(sel)
-            if el:
-                el.fill(wing_id)
-                break
-
-        page.fill("input[type='password']", wing_pw)
-
-        btn = page.query_selector("button[type='submit']")
-        if btn:
-            btn.click()
-
-        page.wait_for_load_state("networkidle", timeout=15000)
-        result_box[name] = "ok"
-
-        # 브라우저 닫힐 때까지 대기 (스레드 유지)
-        while True:
-            try:
-                if page.is_closed():
-                    break
-                time.sleep(2)
-            except Exception:
-                break
-
-    except Exception as e:
-        result_box[name] = f"오류: {e}"
-    finally:
-        try:
-            pw.stop()
-        except Exception:
-            pass
-
-
-def _open_all_with_playwright(creds: dict, names: list) -> tuple[int, list[str]]:
-    """5개 계정 동시 실행, (성공수, 오류목록) 반환"""
-    results = {}
-    threads = []
-
-    for name in names:
-        c = _match_cred(creds, name)
-        wid = c.get("id", "")
-        wpw = c.get("pw", "")
-        if not (wid and wpw):
-            results[name] = "ID/PW 없음"
-            continue
-        t = threading.Thread(
-            target=_pw_open_one,
-            args=(name, wid, wpw, results),
-            daemon=True,
-        )
-        threads.append((name, t))
-
-    for name, t in threads:
-        t.start()
-        time.sleep(0.6)          # Chrome 창 순차 오픈 (동시 충돌 방지)
-
-    # 3초 대기 후 결과 수집
-    time.sleep(3)
-    ok  = [n for n, r in results.items() if r == "ok"]
-    err = [f"{n}: {r}" for n, r in results.items() if r != "ok"]
-    return len(ok), err
-
-
-# ─────────────────────────────────────────
-# Cloud 전용: 북마클릿 + PW 복사 카드
+# wing:// 프로토콜 버튼 + 북마클릿 카드
 # ─────────────────────────────────────────
 
 def _launcher_buttons_html(names: list) -> str:
     """
-    Cloud/로컬 공통 — JavaScript fetch → localhost:8888 (Wing Launcher)
-    Launcher가 실행 중이면 Chrome 자동 열기, 아니면 안내 표시
+    wing:// 커스텀 프로토콜 — Wing자동로그인.exe가 등록되어 있으면
+    버튼 클릭 시 Chrome이 바로 열림 (서버 불필요)
     """
     names_js = json.dumps(names)
     return f"""<!DOCTYPE html>
@@ -148,10 +58,8 @@ def _launcher_buttons_html(names: list) -> str:
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif;font-size:14px;}}
 body{{padding:4px;}}
-#status{{padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:12px;}}
-.ok{{background:#d1e7dd;color:#0a3622;}}
-.ng{{background:#f8d7da;color:#58151c;}}
-.checking{{background:#fff3cd;color:#664d03;}}
+.info{{padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:12px;
+  background:#d1e7dd;color:#0a3622;}}
 .grid{{display:flex;flex-wrap:wrap;gap:6px;}}
 .btn-all{{width:100%;height:44px;background:#E4002B;color:#fff;border:none;
   border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:8px;}}
@@ -159,69 +67,31 @@ body{{padding:4px;}}
 .btn-one{{flex:1;min-width:80px;height:36px;background:#fff;color:#333;
   border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;}}
 .btn-one:hover{{background:#f5f5f5;}}
-.btn-all:disabled,.btn-one:disabled{{opacity:.4;cursor:not-allowed;}}
 </style></head>
 <body>
-<div id="status" class="checking">⏳ Wing Launcher 확인 중...</div>
-<button class="btn-all" id="btnAll" onclick="openAll()" disabled>🚀 5개 계정 전부 열기</button>
+<div class="info">💡 Wing자동로그인.exe 최초 1회 실행 후 버튼 사용 가능</div>
+<button class="btn-all" onclick="openAll()">🚀 5개 계정 전부 열기</button>
 <div class="grid" id="grid"></div>
 
 <script>
 const NAMES = {names_js};
-const BASE = 'http://localhost:8888';
-let launcherOk = false;
 
 // 개별 버튼 생성
 const grid = document.getElementById('grid');
 NAMES.forEach(n => {{
   const b = document.createElement('button');
-  b.className = 'btn-one'; b.id = 'btn_' + n;
-  b.textContent = n; b.disabled = true;
+  b.className = 'btn-one';
+  b.textContent = n;
   b.onclick = () => openOne(n);
   grid.appendChild(b);
 }});
 
-function setEnabled(ok) {{
-  launcherOk = ok;
-  document.getElementById('btnAll').disabled = !ok;
-  NAMES.forEach(n => {{ const b = document.getElementById('btn_'+n); if(b) b.disabled = !ok; }});
-}}
-
-function showStatus(msg, cls) {{
-  const el = document.getElementById('status');
-  el.textContent = msg; el.className = cls;
-}}
-
-// Launcher 상태 확인
-fetch(BASE + '/ping', {{mode:'cors'}})
-  .then(r => r.json())
-  .then(d => {{
-    showStatus('✅ Wing Launcher 실행 중 — 버튼을 누르면 Chrome이 열려요', 'ok');
-    setEnabled(true);
-  }})
-  .catch(() => {{
-    showStatus('❌ Wing Launcher 미실행 — wing_launcher_start.bat 을 먼저 실행하세요', 'ng');
-    setEnabled(false);
-  }});
-
 function openAll() {{
-  document.getElementById('btnAll').textContent = '⏳ 열고 있어요...';
-  fetch(BASE + '/open-all', {{mode:'cors'}})
-    .then(r => r.json())
-    .then(d => {{
-      document.getElementById('btnAll').textContent = '✅ ' + d.opened.length + '개 열림!';
-      setTimeout(() => document.getElementById('btnAll').textContent = '🚀 5개 계정 전부 열기', 3000);
-    }})
-    .catch(() => showStatus('❌ Launcher 연결 실패', 'ng'));
+  window.location.href = 'wing://open-all';
 }}
 
 function openOne(name) {{
-  const b = document.getElementById('btn_' + name);
-  b.textContent = '⏳';
-  fetch(BASE + '/open/' + name, {{mode:'cors'}})
-    .then(r => r.json())
-    .then(() => {{ b.textContent = '✅ ' + name; setTimeout(() => b.textContent = name, 2000); }})
-    .catch(() => {{ b.textContent = '❌'; setTimeout(() => b.textContent = name, 2000); }});
+  window.location.href = 'wing://open/' + name;
 }}
 </script>
 </body></html>"""
@@ -316,64 +186,34 @@ def render(selected_account, accounts_df, account_names):
     creds = _load_creds()
 
     # ════════════════════════════════════════
-    # Wing Launcher 버튼 (Cloud/로컬 공통)
+    # wing:// 프로토콜 버튼
     # ════════════════════════════════════════
     st.subheader("🚀 Wing 자동 열기")
 
-    # Launcher 상태 확인 + 전체/개별 열기 버튼 (JavaScript fetch → localhost:8888)
     launcher_html = _launcher_buttons_html(names)
-    components.html(launcher_html, height=200)
+    components.html(launcher_html, height=180)
 
     st.divider()
 
     # ════════════════════════════════════════
-    # 로컬 PC 모드: Playwright 동시 자동 로그인 (추가 옵션)
+    # wing:// 설치 안내
     # ════════════════════════════════════════
-    if _IS_LOCAL:
-        st.subheader("🖥️ 로컬 자동 실행")
+    with st.expander("🛠️ 최초 설치 방법 (한 번만)", expanded=False):
+        st.markdown("""
+**Wing자동로그인.exe 한 번만 실행하면 위 버튼이 동작합니다.**
 
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            if st.button("🚀 5개 계정 전부 열기 (크롬 동시 실행)", type="primary", use_container_width=True, key="_open_all"):
-                with st.spinner("크롬 창 열고 있어요... (5~10초)"):
-                    ok_cnt, errors = _open_all_with_playwright(creds, names)
-                if ok_cnt > 0:
-                    st.success(f"✅ {ok_cnt}개 계정 크롬 창 열림!")
-                if errors:
-                    for e in errors:
-                        st.warning(e)
+1. `dist\\Wing자동로그인.exe` 파일을 엄마 PC에 복사
+2. 더블클릭해서 한 번 실행 (wing:// 프로토콜 자동 등록)
+3. 이후 위 🚀 버튼 클릭 → Chrome이 바로 열림
 
-        with c2:
-            # 계정 개별 열기
-            for name in names:
-                c = _match_cred(creds, name)
-                wid = c.get("id", "")
-                wpw = c.get("pw", "")
-                if wid and wpw:
-                    if st.button(f"{name}", key=f"_open_one_{name}", use_container_width=True):
-                        with st.spinner(f"{name} 열는 중..."):
-                            res = {}
-                            t = threading.Thread(target=_pw_open_one, args=(name, wid, wpw, res), daemon=True)
-                            t.start()
-                            time.sleep(3)
-                        st.success(f"{name} 열림")
-
-        st.divider()
-        with st.expander("⚙️ ngrok 외부 접속 설정 (다른 기기에서 접속할 때)"):
-            st.markdown("""
-**ngrok으로 어디서든 이 대시보드 접속 가능:**
-
-```bash
-# 1. ngrok 설치 (최초 1회)
-winget install ngrok
-
-# 2. 실행 (로컬 Streamlit이 8501 포트에서 실행 중일 때)
-ngrok http 8501
+**EXE 파일 빌드 방법 (개발 PC에서):**
 ```
-
-ngrok 실행 후 나오는 `https://xxxx.ngrok.io` 주소로 외부에서 접속하면
-이 PC에서 크롬이 자동으로 열려요.
+build_launcher_exe.bat 실행
+→ dist\\Wing자동로그인.exe 생성
+```
 """)
+
+    if _IS_LOCAL:
         return   # 로컬 모드는 여기서 끝
 
     # ════════════════════════════════════════
