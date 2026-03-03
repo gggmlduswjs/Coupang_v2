@@ -5,6 +5,7 @@
 실행: streamlit run dashboard.py
 """
 import sys
+import os
 import streamlit as st
 from pathlib import Path
 import logging
@@ -15,6 +16,15 @@ sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
+
+# ── Streamlit Cloud: st.secrets → os.environ 주입 (DB 엔진 초기화 전 필수) ──
+# 로컬에서는 .env가 이미 로드됐으므로 setdefault 로 덮어쓰지 않음
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, str):
+            os.environ.setdefault(_k, _v)
+except Exception:
+    pass
 
 logging.basicConfig(level=logging.INFO)
 

@@ -15,23 +15,28 @@ ROOT = Path(__file__).resolve().parent.parent
 def _resolve_database_url() -> str:
     """DATABASE_URL 결정: 환경변수 → Streamlit secrets → 기본 SQLite"""
 
-    # 1) 환경변수
+    # 1) 환경변수 (로컬 .env 또는 클라우드에서 app.py가 주입한 값)
     url = os.environ.get("DATABASE_URL")
     if url:
+        _logger.info("DATABASE_URL: 환경변수에서 로드")
         return url
 
-    # 2) Streamlit secrets (Streamlit Cloud 배포 시)
+    # 2) Streamlit secrets 직접 조회 (app.py 주입보다 늦게 임포트되는 경우 대비)
     try:
         import streamlit as st
-        if hasattr(st, "secrets"):
-            if "supabase" in st.secrets:
-                url = st.secrets["supabase"]["database_url"]
-                if url:
-                    return url
-            if "DATABASE_URL" in st.secrets:
-                url = st.secrets["DATABASE_URL"]
-                if url:
-                    return url
+        secrets = st.secrets  # noqa — AttributeError 발생 시 except로
+        if "DATABASE_URL" in secrets:
+            url = secrets["DATABASE_URL"]
+            if url:
+                _logger.info("DATABASE_URL: st.secrets에서 로드")
+                os.environ["DATABASE_URL"] = url  # 이후 호출을 위해 캐시
+                return url
+        if "supabase" in secrets and "database_url" in secrets["supabase"]:
+            url = secrets["supabase"]["database_url"]
+            if url:
+                _logger.info("DATABASE_URL: st.secrets[supabase]에서 로드")
+                os.environ["DATABASE_URL"] = url
+                return url
     except Exception:
         pass
 
@@ -44,8 +49,9 @@ def _resolve_database_url() -> str:
     except Exception:
         pass
 
-    # 4) 기본 SQLite
+    # 4) 기본 SQLite (로컬 개발 전용)
     default_db = ROOT / "data" / "coupang.db"
+    _logger.warning(f"DATABASE_URL 미설정 — SQLite 폴백: {default_db}")
     return f"sqlite:///{default_db}"
 
 
