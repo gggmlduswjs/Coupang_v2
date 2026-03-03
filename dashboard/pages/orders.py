@@ -261,18 +261,18 @@ def render(selected_account, accounts_df, account_names):
         st.cache_data.clear()
 
     # ── 상단 컨트롤 ──
-    import time as _time
     _top_c1, _top_c2 = st.columns([2, 5])
     with _top_c1:
         if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
                      help="WING API에서 최근 7일 주문 즉시 조회", type="primary"):
-            with st.spinner("WING API 조회 중... (1~2분 소요)"):
-                _synced = _sync_live_orders()
-            _clear_order_caches()
-            st.session_state["order_last_synced"] = datetime.now().strftime("%H:%M:%S")
-            st.success(f"완료: {_synced}건 갱신")
-            _time.sleep(0.5)
-            st.rerun()
+            try:
+                with st.spinner("WING API 조회 중... (1~2분 소요)"):
+                    _synced = _sync_live_orders()
+                _clear_order_caches()
+                st.session_state["order_last_synced"] = datetime.now().strftime("%H:%M:%S")
+                st.success(f"✅ 완료: {_synced}건 갱신")
+            except Exception as _e:
+                st.error(f"❌ 동기화 실패: {_e}")
     with _top_c2:
         _last_synced = st.session_state.get("order_last_synced")
         if _last_synced:
