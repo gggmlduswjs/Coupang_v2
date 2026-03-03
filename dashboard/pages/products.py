@@ -29,11 +29,12 @@ def render(selected_account, accounts_df, account_names):
                               AND sale_price > original_price) as price_over_cnt
         FROM listings
     """)
-    _pub_cnt = int(query_df_cached("SELECT COUNT(*) as c FROM publishers WHERE is_active = true").iloc[0]['c'])
-    _all_active = int(_kpi.iloc[0]['active_cnt'])
-    _all_other = int(_kpi.iloc[0]['other_cnt'])
-    _low_stock_cnt = int(_kpi.iloc[0]['low_stock_cnt'])
-    _price_over_cnt = int(_kpi.iloc[0]['price_over_cnt'])
+    _pub_df = query_df_cached("SELECT COUNT(*) as c FROM publishers WHERE is_active = true")
+    _pub_cnt = int(_pub_df.iloc[0]['c']) if not _pub_df.empty else 0
+    _all_active = int(_kpi.iloc[0]['active_cnt']) if not _kpi.empty else 0
+    _all_other = int(_kpi.iloc[0]['other_cnt']) if not _kpi.empty else 0
+    _low_stock_cnt = int(_kpi.iloc[0]['low_stock_cnt']) if not _kpi.empty else 0
+    _price_over_cnt = int(_kpi.iloc[0]['price_over_cnt']) if not _kpi.empty else 0
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("전체 판매중", f"{_all_active:,}개")
@@ -95,10 +96,10 @@ def render(selected_account, accounts_df, account_names):
         FROM listings WHERE account_id = :aid
     """, {"aid": account_id})
 
-    _a_active = int(_acct_kpi.iloc[0]['active_cnt'])
-    _a_paused = int(_acct_kpi.iloc[0]['paused_cnt'])
-    _a_other  = int(_acct_kpi.iloc[0]['other_cnt'])
-    _a_total  = int(_acct_kpi.iloc[0]['total_cnt'])
+    _a_active = int(_acct_kpi.iloc[0]['active_cnt']) if not _acct_kpi.empty else 0
+    _a_paused = int(_acct_kpi.iloc[0]['paused_cnt']) if not _acct_kpi.empty else 0
+    _a_other  = int(_acct_kpi.iloc[0]['other_cnt'])  if not _acct_kpi.empty else 0
+    _a_total  = int(_acct_kpi.iloc[0]['total_cnt'])  if not _acct_kpi.empty else 0
 
     ka1, ka2, ka3, ka4 = st.columns(4)
     ka1.metric(f"{selected_account_name} 판매중", f"{_a_active:,}개")

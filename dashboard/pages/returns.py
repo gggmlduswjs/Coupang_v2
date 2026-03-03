@@ -102,9 +102,10 @@ def render(selected_account, accounts_df, account_names):
             WHERE 1=1 {_ret_acct_where} {_ret_date_where}
         """
 
-        _ret_total = int(query_df(f"SELECT COUNT(*) as c {_ret_kpi_base}", _ret_acct_params).iloc[0]["c"])
-        _ret_pending = int(query_df(f"SELECT COUNT(*) as c {_ret_kpi_base} AND r.receipt_status IN ('RELEASE_STOP_UNCHECKED', 'RETURNS_UNCHECKED')", _ret_acct_params).iloc[0]["c"])
-        _ret_completed = int(query_df(f"SELECT COUNT(*) as c {_ret_kpi_base} AND r.receipt_status = 'RETURNS_COMPLETED'", _ret_acct_params).iloc[0]["c"])
+        def _cnt(df): return int(df.iloc[0]["c"]) if not df.empty else 0
+        _ret_total     = _cnt(query_df(f"SELECT COUNT(*) as c {_ret_kpi_base}", _ret_acct_params))
+        _ret_pending   = _cnt(query_df(f"SELECT COUNT(*) as c {_ret_kpi_base} AND r.receipt_status IN ('RELEASE_STOP_UNCHECKED', 'RETURNS_UNCHECKED')", _ret_acct_params))
+        _ret_completed = _cnt(query_df(f"SELECT COUNT(*) as c {_ret_kpi_base} AND r.receipt_status = 'RETURNS_COMPLETED'", _ret_acct_params))
 
         # 귀책 비율
         _ret_fault = query_df(f"""

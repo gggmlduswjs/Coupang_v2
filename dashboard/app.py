@@ -31,6 +31,16 @@ logging.basicConfig(level=logging.INFO)
 # ─── 페이지 설정 ───
 st.set_page_config(page_title="쿠팡 도서 자동화", page_icon="📚", layout="wide")
 
+# ─── DB 연결 확인 ───
+from core.database import _database_url
+if _database_url.startswith("sqlite"):
+    st.error(
+        "⚠️ **데이터베이스 미연결** — Streamlit Cloud Secrets에 `DATABASE_URL`이 설정되지 않았습니다.\n\n"
+        "**설정 방법**: Streamlit Cloud 앱 대시보드 → ⋮ → Settings → Secrets 탭에 아래 내용 붙여넣기:\n"
+        "```\nDATABASE_URL = \"postgresql://postgres.glivxzmrgypqhtryoglg:0864gmldus!@aws-1-ap-south-1.pooler.supabase.com:6543/postgres\"\n```"
+    )
+    st.stop()
+
 # ─── 공통 유틸 ───
 from dashboard.utils import query_df
 
