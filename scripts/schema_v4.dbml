@@ -1,0 +1,636 @@
+// Supabase PostgreSQL v4.1 - 23 tables
+// https://dbdiagram.io/d
+
+// ============================================================
+// A. Master Data
+// ============================================================
+
+Table accounts {
+  id integer [pk, increment]
+  account_code varchar(20) [not null, unique]
+  account_name varchar(50) [not null]
+  email varchar(100) [default: '']
+  is_active boolean [default: true]
+  status varchar(20) [default: 'active']
+  vendor_id varchar(20)
+  wing_access_key varchar(100) [note: 'TODO: encrypt via Supabase Vault']
+  wing_secret_key varchar(100) [note: 'TODO: encrypt via Supabase Vault']
+  wing_api_enabled boolean [default: false]
+  outbound_shipping_code varchar(50)
+  return_center_code varchar(50)
+  memo text [default: '']
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  Note: 'Unified account (Coupong + analysis)'
+}
+
+Table publishers {
+  id integer [pk, increment]
+  name varchar(100) [not null, unique]
+  margin_rate integer [not null]
+  min_free_shipping integer [not null]
+  supply_rate float [not null]
+  is_active boolean [default: true]
+  notes text
+  created_at timestamptz [default: `now()`]
+
+  Note: 'Publisher master (margin/supply rate)'
+}
+
+// ============================================================
+// B. Book/Product Pipeline
+// ============================================================
+
+Table books {
+  id integer [pk, increment]
+  isbn varchar(13) [not null, unique]
+  title varchar(500) [not null]
+  author varchar(200)
+  publisher_id integer [ref: > publishers.id]
+  list_price integer [not null]
+  year integer
+  normalized_title varchar(500)
+  normalized_series varchar(200)
+  sales_point integer [default: 0]
+  crawled_at timestamptz [default: `now()`]
+
+  Note: 'Aladin ISBN book metadata'
+}
+
+Table products {
+  id integer [pk, increment]
+  book_id integer [not null, ref: > books.id]
+  isbn varchar(13)
+  list_price integer [not null]
+  sale_price integer [not null]
+  supply_rate float [not null]
+  margin_per_unit integer [not null]
+  shipping_cost integer [default: 2300]
+  net_margin integer [not null]
+  shipping_policy varchar(20) [not null]
+  can_upload_single boolean [default: true]
+  status varchar(20) [default: 'ready']
+  exclude_reason text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  Note: 'Single-book product'
+}
+
+Table bundle_skus {
+  id integer [pk, increment]
+  bundle_key varchar(200) [not null, unique]
+  bundle_name varchar(300) [not null]
+  publisher_id integer [not null, ref: > publishers.id]
+  normalized_series varchar(200) [not null]
+  year integer [not null]
+  book_count integer [not null]
+  total_list_price integer [not null]
+  total_sale_price integer [not null]
+  supply_rate float [not null]
+  total_margin integer [not null]
+  shipping_cost integer [default: 2300]
+  net_margin integer [not null]
+  shipping_policy varchar(20) [default: 'free']
+  created_at timestamptz [default: `now()`]
+
+  Note: 'Bundle product (series set)'
+}
+
+Table bundle_items {
+  id integer [pk, increment]
+  bundle_id integer [not null, ref: > bundle_skus.id]
+  book_id integer [not null, ref: > books.id]
+  isbn varchar(13) [not null]
+
+  indexes {
+    (bundle_id, book_id) [unique]
+  }
+
+  Note: 'Bundle composition (book list)'
+}
+
+// ============================================================
+// C. Master Catalog
+// ============================================================
+
+Table master_catalog {
+  id integer [pk, increment]
+  isbn varchar(50) [default: '']
+  canonical_name varchar(500) [not null]
+  coupang_catalog_id varchar(50) [not null, unique]
+  category varchar(200) [default: '']
+  publisher varchar(200) [default: '']
+  brand varchar(200) [default: '']
+  base_price integer
+  product_type varchar(20) [default: 'single']
+  set_composition jsonb [default: '[]']
+  adult_only varchar(5) [default: '']
+  model_number varchar(100) [default: '']
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  Note: 'Cross-account master catalog by coupang display product ID'
+}
+
+Table sync_log {
+  id integer [pk, increment]
+  master_catalog_id integer [ref: > master_catalog.id]
+  source_account_id integer [ref: > accounts.id]
+  target_account_id integer [ref: > accounts.id]
+  action varchar(100) [not null]
+  before_value text [default: '']
+  after_value text [default: '']
+  created_at timestamptz [default: `now()`]
+
+  Note: 'Cross-account sync history'
+}
+
+// ============================================================
+// D. Product Registration/Management
+// ============================================================
+
+Table listings {
+  id integer [pk, increment]
+  account_id integer [not null, ref: > accounts.id]
+  coupang_product_id bigint [not null]
+  vendor_item_id bigint
+  product_name varchar(500)
+  coupang_status varchar(20) [default: 'pending']
+  original_price integer [default: 0]
+  sale_price integer [default: 0]
+  supply_price integer
+  stock_quantity integer [default: 0]
+  display_category_code varchar(20)
+  delivery_charge_type varchar(20)
+  delivery_charge integer
+  free_ship_over_amount integer
+  return_charge integer
+  brand varchar(200)
+  isbn text
+  product_id integer [ref: > products.id]
+  bundle_id integer [ref: > bundle_skus.id]
+  master_catalog_id integer [ref: > master_catalog.id]
+  raw_json text
+  detail_synced_at timestamptz
+  synced_at timestamptz
+  approval_status varchar(20) [default: '']
+  search_tags text [default: '']
+  barcode varchar(50) [default: '']
+  model_number varchar(100) [default: '']
+  option_name varchar(200) [default: '']
+  sold_quantity integer [default: 0]
+  seller_product_code varchar(100) [default: '']
+  coupang_display_product_id varchar(50) [default: '']
+  product_status varchar(20) [default: '']
+  adult_only varchar(5) [default: '']
+  purchase_options jsonb [default: '[]']
+  search_options jsonb [default: '[]']
+  images jsonb [default: '[]']
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  indexes {
+    (account_id, coupang_product_id) [unique]
+  }
+
+  Note: 'Core: unified registered products per account'
+}
+
+Table deleted_listings {
+  id integer [pk, increment]
+  account_id integer [not null]
+  coupang_product_id bigint [not null]
+  vendor_item_id bigint
+  product_name varchar(500)
+  coupang_status varchar(20)
+  original_price integer [default: 0]
+  sale_price integer [default: 0]
+  supply_price integer
+  stock_quantity integer [default: 0]
+  display_category_code varchar(20)
+  delivery_charge_type varchar(20)
+  delivery_charge integer
+  free_ship_over_amount integer
+  return_charge integer
+  brand varchar(200)
+  isbn text
+  product_id integer
+  bundle_id integer
+  raw_json text
+  detail_synced_at timestamptz
+  synced_at timestamptz
+  original_created_at timestamptz
+  deleted_reason varchar(200) [default: 'coupang deleted']
+  deleted_at timestamptz [default: `now()`]
+
+  Note: 'Deleted listing archive (no FK)'
+}
+
+Table product_changes {
+  id integer [pk, increment]
+  account_id integer [not null, ref: > accounts.id]
+  seller_product_id varchar(50) [not null]
+  action varchar(50) [not null]
+  field varchar(100) [default: '']
+  before_value text [default: '']
+  after_value text [default: '']
+  result_code varchar(50) [default: '']
+  changed_at timestamptz [not null]
+
+  Note: 'API product change history'
+}
+
+// ============================================================
+// E. Orders/Revenue/Settlement
+// ============================================================
+
+Table orders {
+  id integer [pk, increment]
+  account_id integer [not null, ref: > accounts.id]
+  shipment_box_id bigint [not null]
+  order_id bigint [not null]
+  vendor_item_id bigint
+  status varchar(30)
+  ordered_at timestamptz
+  paid_at timestamptz
+  orderer_name varchar(100)
+  receiver_name varchar(100)
+  receiver_addr varchar(500)
+  receiver_post_code varchar(10)
+  product_id bigint
+  seller_product_id bigint
+  seller_product_name varchar(500)
+  vendor_item_name varchar(500)
+  shipping_count integer [default: 0]
+  cancel_count integer [default: 0]
+  hold_count_for_cancel integer [default: 0]
+  sales_price integer [default: 0]
+  order_price integer [default: 0]
+  discount_price integer [default: 0]
+  shipping_price integer [default: 0]
+  delivery_company_name varchar(50)
+  invoice_number varchar(50)
+  shipment_type varchar(50)
+  delivered_date timestamptz
+  confirm_date timestamptz
+  refer varchar(50)
+  canceled boolean [default: false]
+  listing_id integer [ref: > listings.id]
+  raw_json text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  indexes {
+    (account_id, shipment_box_id, vendor_item_id) [unique]
+  }
+
+  Note: 'Purchase orders (WING API shipmentBoxId)'
+}
+
+Table revenue_history {
+  id integer [pk, increment]
+  account_id integer [not null, ref: > accounts.id]
+  order_id bigint [not null]
+  sale_type varchar(50) [not null]
+  sale_date date [not null]
+  recognition_date date [not null]
+  settlement_date date
+  product_id bigint
+  product_name varchar(500)
+  vendor_item_id bigint
+  vendor_item_name varchar(500)
+  sale_price integer [default: 0]
+  quantity integer [default: 0]
+  coupang_discount integer [default: 0]
+  sale_amount integer [default: 0]
+  seller_discount integer [default: 0]
+  service_fee integer [default: 0]
+  service_fee_vat integer [default: 0]
+  service_fee_ratio float
+  settlement_amount integer [default: 0]
+  delivery_fee_amount integer [default: 0]
+  delivery_fee_settlement integer [default: 0]
+  listing_id integer [ref: > listings.id]
+  created_at timestamptz [default: `now()`]
+
+  indexes {
+    (account_id, order_id, vendor_item_id) [unique]
+  }
+
+  Note: 'Revenue history (SALE/REFUND)'
+}
+
+Table settlement_history {
+  id integer [pk, increment]
+  account_id integer [not null, ref: > accounts.id]
+  year_month varchar(7) [not null]
+  settlement_type varchar(20)
+  settlement_date date
+  settlement_status varchar(20)
+  revenue_date_from date
+  revenue_date_to date
+  total_sale integer [default: 0]
+  service_fee integer [default: 0]
+  settlement_target_amount integer [default: 0]
+  settlement_amount integer [default: 0]
+  last_amount integer [default: 0]
+  pending_released_amount integer [default: 0]
+  seller_discount_coupon integer [default: 0]
+  downloadable_coupon integer [default: 0]
+  seller_service_fee integer [default: 0]
+  courantee_fee integer [default: 0]
+  deduction_amount integer [default: 0]
+  debt_of_last_week integer [default: 0]
+  final_amount integer [default: 0]
+  bank_name varchar(50)
+  bank_account varchar(50)
+  raw_json text
+  created_at timestamptz [default: `now()`]
+
+  indexes {
+    (account_id, year_month, settlement_type, settlement_date) [unique]
+  }
+
+  Note: 'Monthly/weekly settlement'
+}
+
+// ============================================================
+// F. Returns/Ads
+// ============================================================
+
+Table return_requests {
+  id integer [pk, increment]
+  account_id integer [not null, ref: > accounts.id]
+  receipt_id bigint [not null]
+  order_id bigint
+  payment_id bigint
+  receipt_type varchar(50)
+  receipt_status varchar(40)
+  created_at_api timestamptz
+  modified_at_api timestamptz
+  requester_name varchar(100)
+  requester_phone varchar(50)
+  requester_address varchar(500)
+  requester_address_detail varchar(200)
+  requester_zip_code varchar(10)
+  cancel_reason_category1 varchar(100)
+  cancel_reason_category2 varchar(100)
+  cancel_reason text
+  cancel_count_sum integer
+  return_delivery_id bigint
+  return_delivery_type varchar(50)
+  release_stop_status varchar(30)
+  fault_by_type varchar(50)
+  pre_refund boolean
+  complete_confirm_type varchar(30)
+  complete_confirm_date timestamptz
+  reason_code varchar(50)
+  reason_code_text varchar(200)
+  return_shipping_charge integer
+  enclose_price integer
+  return_items_json text
+  return_delivery_json text
+  raw_json text
+  listing_id integer [ref: > listings.id]
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  indexes {
+    (account_id, receipt_id) [unique]
+  }
+
+  Note: 'Return/cancel requests'
+}
+
+Table ad_performances {
+  id integer [pk, increment]
+  account_id integer [not null, ref: > accounts.id]
+  ad_date date [not null]
+  campaign_id varchar(50) [default: '']
+  campaign_name varchar(200) [default: '']
+  ad_group_name varchar(200) [default: '']
+  coupang_product_id bigint [not null, default: 0]
+  product_name varchar(500) [default: '']
+  listing_id integer [ref: > listings.id]
+  keyword varchar(200) [default: '']
+  match_type varchar(20) [default: '']
+  impressions integer [default: 0]
+  clicks integer [default: 0]
+  ctr float [default: 0.0]
+  avg_cpc integer [default: 0]
+  ad_spend integer [default: 0]
+  direct_orders integer [default: 0]
+  direct_revenue integer [default: 0]
+  indirect_orders integer [default: 0]
+  indirect_revenue integer [default: 0]
+  total_orders integer [default: 0]
+  total_revenue integer [default: 0]
+  roas float [default: 0.0]
+  total_quantity integer [default: 0]
+  direct_quantity integer [default: 0]
+  indirect_quantity integer [default: 0]
+  bid_type varchar(30) [default: '']
+  sales_method varchar(20) [default: '']
+  ad_type varchar(50) [default: '']
+  option_id varchar(50) [default: '']
+  ad_name varchar(200) [default: '']
+  placement varchar(100) [default: '']
+  creative_id varchar(50) [default: '']
+  category varchar(200) [default: '']
+  report_type varchar(20) [default: 'campaign']
+  created_at timestamptz [default: `now()`]
+
+  indexes {
+    (account_id, ad_date, campaign_id, ad_group_name, coupang_product_id, keyword, report_type) [unique]
+  }
+
+  Note: 'Ad performance report'
+}
+
+Table ad_spends {
+  id integer [pk, increment]
+  account_id integer [not null, ref: > accounts.id]
+  ad_date date [not null]
+  campaign_id varchar(50) [not null]
+  campaign_name varchar(200)
+  ad_type varchar(20)
+  ad_objective varchar(50)
+  daily_budget integer [default: 0]
+  spent_amount integer [default: 0]
+  adjustment integer [default: 0]
+  spent_after_adjust integer [default: 0]
+  over_spend integer [default: 0]
+  billable_cost integer [default: 0]
+  vat_amount integer [default: 0]
+  total_charge integer [default: 0]
+  created_at timestamptz [default: `now()`]
+
+  indexes {
+    (account_id, ad_date, campaign_id) [unique]
+  }
+
+  Note: 'Ad spend settlement (per campaign per day)'
+}
+
+// ============================================================
+// G. Search Analysis
+// ============================================================
+
+Table keywords {
+  id integer [pk, increment]
+  keyword varchar(200) [not null, unique]
+  created_at timestamptz [default: `now()`]
+
+  Note: 'Search analysis keywords'
+}
+
+Table snapshots {
+  id integer [pk, increment]
+  keyword_id integer [not null, ref: > keywords.id]
+  collected_at timestamptz [default: `now()`]
+  source varchar(50)
+  page_count integer [default: 0]
+  total_products integer [default: 0]
+
+  Note: 'Keyword search result snapshots'
+}
+
+Table search_results {
+  id integer [pk, increment]
+  snapshot_id integer [not null, ref: > snapshots.id]
+  keyword_id integer [not null, ref: > keywords.id]
+  exposure_order integer
+  vendor_item_id varchar(50)
+  ad_type varchar(20)
+  organic_rank integer
+  product_name varchar(500)
+  original_price integer [default: 0]
+  discount_rate float [default: 0.0]
+  sale_price integer [default: 0]
+  rating float [default: 0.0]
+  review_count integer [default: 0]
+  url varchar(500)
+  product_id_coupang varchar(50)
+  item_id varchar(50)
+  source_type varchar(50)
+  delivery_type varchar(50)
+  arrival_date varchar(50)
+  free_shipping boolean [default: false]
+  cashback varchar(50)
+  keyword_in_name boolean [default: false]
+  keyword_position integer
+  category varchar(200)
+  image_count integer [default: 0]
+  sku varchar(100)
+  created_at timestamptz [default: `now()`]
+
+  Note: 'Search result product data'
+}
+
+// ============================================================
+// H. Monitoring/Matching
+// ============================================================
+
+Table exposure_logs {
+  id integer [pk, increment]
+  listing_id integer [not null, ref: > listings.id]
+  account_id integer [not null, ref: > accounts.id]
+  keyword varchar(200) [not null]
+  found boolean [default: false]
+  exposure_rank integer
+  page integer
+  matched_by varchar(50) [default: '']
+  checked_at timestamptz [default: `now()`]
+
+  Note: 'Exposure monitoring'
+}
+
+Table catalog_matches {
+  id integer [pk, increment]
+  listing_id integer [not null, ref: > listings.id]
+  account_id integer [not null, ref: > accounts.id]
+  candidate_product_id varchar(50) [default: '']
+  candidate_vendor_item_id varchar(50) [default: '']
+  candidate_name varchar(500) [default: '']
+  candidate_price integer
+  candidate_review_count integer
+  candidate_rating float
+  candidate_url varchar(500) [default: '']
+  candidate_category varchar(200) [default: '']
+  name_score float [default: 0]
+  price_score float [default: 0]
+  category_score float [default: 0]
+  review_bonus float [default: 0]
+  total_score float [default: 0]
+  confidence varchar(20) [default: 'low']
+  rank integer [default: 0]
+  status varchar(20) [default: 'pending']
+  matched_at timestamptz [default: `now()`]
+
+  Note: 'Catalog matching candidates'
+}
+
+Table analysis_results {
+  id integer [pk, increment]
+  listing_id integer [not null, ref: > listings.id]
+  analysis_date date [not null]
+  period_days integer [default: 7]
+  total_orders integer
+  conversion_rate float
+  created_at timestamptz [default: `now()`]
+
+  Note: 'Product sales analysis results'
+}
+
+// ============================================================
+// Table Groups (color coding in dbdiagram)
+// ============================================================
+
+TableGroup master_data {
+  accounts
+  publishers
+}
+
+TableGroup book_pipeline {
+  books
+  products
+  bundle_skus
+  bundle_items
+}
+
+TableGroup catalog {
+  master_catalog
+  sync_log
+}
+
+TableGroup product_mgmt {
+  listings
+  deleted_listings
+  product_changes
+}
+
+TableGroup order_revenue {
+  orders
+  revenue_history
+  settlement_history
+}
+
+TableGroup returns_ads {
+  return_requests
+  ad_performances
+  ad_spends
+}
+
+TableGroup search_analysis {
+  keywords
+  snapshots
+  search_results
+}
+
+TableGroup monitoring {
+  exposure_logs
+  catalog_matches
+  analysis_results
+}

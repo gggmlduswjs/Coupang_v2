@@ -1,4 +1,4 @@
-"""재고 상품 모델 (dataclass에서 SQLAlchemy 모델로 변환)"""
+"""재고 상품 모델 — DEPRECATED: listings 테이블로 통합됨. 하위 호환용으로 유지."""
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Index
 from datetime import datetime
 from core.database import Base

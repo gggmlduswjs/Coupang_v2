@@ -34,6 +34,8 @@ data/*.json
 # ===== Reports (생성물) =====
 reports/*.xlsx
 reports/*.csv
+*.xlsx
+*.csv
 
 # ===== Logs =====
 logs/
@@ -53,7 +55,7 @@ Thumbs.db
 nul
 
 # ===== Streamlit =====
-.streamlit/
+.streamlit/secrets.toml
 
 # ===== Playwright =====
 playwright-state/

@@ -89,6 +89,25 @@ streamlit run dashboard/app.py
 - 새 기능 전 기존 코드 검색 필수
 - 새 파일 생성 전 기존 파일 수정 가능 여부 확인
 
+## Obsidian 문서
+- Vault: `G:\내 드라이브\Obsidian\10. project\쿠팡비즈니스\`
+- 템플릿: `G:\내 드라이브\Obsidian\90. Settings\91. Templates\`
+- **00-Index/** (프로젝트 문서)
+  - `01-요구사항정의서.md` — 기능 18개, P0/P1 우선순위, 비기능 요구사항
+  - `02-API-명세서.md` — WING 51메서드 + Aladin 5메서드, 인증, 에러코드
+  - `03-DB-설계서.md` — 21개 모델 ERD, 테이블 스키마, 인덱스, 마이그레이션
+  - `04-서비스-아키텍처.md` — 4계층 구조, 기술 스택, 데이터 흐름, 보안
+  - `05-서비스-IA.md` — CLI 50+ 명령 맵, Dashboard 9페이지 구조
+  - `06-개발-명세서.md` — 환경 설정, 코딩 규칙, Git 워크플로우, 테스트
+  - `07-마스터플랜.md` — 9 Phase 일정, Gantt, 마일스톤, 리스크
+  - `08-배포-체크리스트.md` — 환경변수, 기능 동작, 안전/보안 체크
+  - `09-화면정의서.md` — CLI 출력 패턴, Streamlit 와이어프레임
+- **03-Technical/** (코드리뷰)
+  - `프로젝트-구조.md` — 전체 구조 (545줄)
+  - `Phase2-코드리뷰.md` — core/ 상세 (1,042줄)
+  - `Phase3-코드리뷰.md` — analysis/ 상세 (695줄)
+  - `Phase4-코드리뷰.md` — operations/ 상세 (1,079줄)
+
 ## 주의사항
 - .env, credentials, API 키 파일 커밋 금지
 - Playwright 수집 시 delay_min/delay_max 준수 (차단 방지)

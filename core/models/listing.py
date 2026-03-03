@@ -1,8 +1,9 @@
-"""상품 등록 현황 모델 — 쿠팡 API 미러 + 내부 매칭 FK"""
+"""상품 등록 현황 모델 — 쿠팡 API 미러 + 내부 매칭 FK + 쿠팡데이터분석 account_products 통합"""
 from sqlalchemy import (
     Column, Integer, BigInteger, String, ForeignKey, DateTime, Text, Index,
     UniqueConstraint,
 )
+from sqlalchemy import JSON as JSONB  # SQLite 호환 (PostgreSQL에선 JSONB 사용)
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from core.database import Base
@@ -11,10 +12,11 @@ from core.constants import LOW_STOCK_THRESHOLD
 
 class Listing(Base):
     """
-    계정별 쿠팡 상품 미러 (API -> DB 동기화)
+    통합 계정별 등록 상품 (Coupong listings + 쿠팡데이터분석 account_products)
 
     - 쿠팡 API 필드를 그대로 저장
-    - product_id / bundle_id FK로 내부 상품과 매칭
+    - product_id / bundle_id / master_catalog_id FK로 내부 상품과 매칭
+    - 쿠팡데이터분석 account_products 전용 필드 14개 포함
     """
 
     __tablename__ = "listings"
@@ -25,14 +27,16 @@ class Listing(Base):
         Index("ix_listing_isbn", "isbn"),
         Index("ix_listing_product_id", "product_id"),
         Index("ix_listing_bundle_id", "bundle_id"),
+        Index("ix_listing_master_catalog_id", "master_catalog_id"),
         Index("ix_listing_synced_at", "synced_at"),
+        Index("ix_listing_barcode", "barcode"),
     )
 
     id = Column(Integer, primary_key=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
 
     # --- 쿠팡 API 필드 (list_products + get_product + get_item_inventory) ---
-    coupang_product_id = Column(BigInteger, nullable=False)          # sellerProductId
+    coupang_product_id = Column(BigInteger, nullable=False)          # sellerProductId (SPID)
     vendor_item_id     = Column(BigInteger)                          # items[0].vendorItemId
     product_name       = Column(String(500))                         # sellerProductName
     coupang_status     = Column(String(20), default='pending')       # active/paused/sold_out/pending
@@ -53,11 +57,28 @@ class Listing(Base):
     # --- 내부 매칭 (nullable — 매칭 안 된 상품은 NULL) ---
     product_id = Column(Integer, ForeignKey("products.id"))          # 단권 매칭
     bundle_id  = Column(Integer, ForeignKey("bundle_skus.id"))       # 묶음 매칭
+    master_catalog_id = Column(Integer, ForeignKey("master_catalog.id"))  # 마스터 카탈로그
 
     # --- 동기화 메타 ---
     raw_json         = Column(Text)          # API 상세 응답 캐시
     detail_synced_at = Column(DateTime)      # 상세 조회 시각
     synced_at        = Column(DateTime)      # 마지막 동기화 시각
+
+    # --- 쿠팡데이터분석 account_products 통합 필드 ---
+    approval_status             = Column(String(20), default='')     # 승인상태
+    search_tags                 = Column(Text, default='')           # 검색어
+    barcode                     = Column(String(50), default='')     # 바코드 (계정별)
+    model_number                = Column(String(100), default='')    # 모델번호
+    option_name                 = Column(String(200), default='')    # 등록 옵션명
+    sold_quantity               = Column(Integer, default=0)         # 판매수량
+    seller_product_code         = Column(String(100), default='')    # 업체상품코드
+    coupang_display_product_id  = Column(String(50), default='')     # 쿠팡 Product ID
+    product_status              = Column(String(20), default='')     # 새상품 등
+    adult_only                  = Column(String(5), default='')      # Y/N
+    purchase_options            = Column(JSONB, default=list)        # 구매옵션
+    search_options              = Column(JSONB, default=list)        # 검색옵션/attributes
+    images                      = Column(JSONB, default=list)        # 이미지 URL 배열
+
     created_at       = Column(DateTime, default=datetime.utcnow)
     updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -65,11 +86,14 @@ class Listing(Base):
     account = relationship("Account", back_populates="listings")
     product = relationship("Product", back_populates="listings")
     bundle = relationship("BundleSKU", back_populates="listings")
+    master_catalog = relationship("MasterCatalog", back_populates="listings")
     analysis_results = relationship("AnalysisResult", back_populates="listing")
     orders = relationship("Order", back_populates="listing")
     revenue_history = relationship("RevenueHistory", back_populates="listing")
     return_requests = relationship("ReturnRequest", back_populates="listing")
     ad_performances = relationship("AdPerformance", back_populates="listing")
+    exposure_logs = relationship("ExposureLog", back_populates="listing")
+    catalog_matches = relationship("CatalogMatch", back_populates="listing")
 
     def __repr__(self):
         return f"<Listing(account={self.account_id}, pid={self.coupang_product_id}, status='{self.coupang_status}')>"

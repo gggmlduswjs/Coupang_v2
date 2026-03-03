@@ -88,5 +88,7 @@ class SearchResult(Base):
     image_count = Column(Integer, default=0)
     sku = Column(String(100))
 
+    created_at = Column(DateTime, default=datetime.utcnow)
+
     def __repr__(self):
         return f"<SearchResult(order={self.exposure_order}, name='{self.product_name[:30] if self.product_name else ''}')>"

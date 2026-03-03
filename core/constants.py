@@ -242,6 +242,78 @@ for _dist, _pubs in DISTRIBUTOR_MAP.items():
         _PUBLISHER_TO_DISTRIBUTOR[_pub] = _dist
 
 
+# ─────────────────────────────────────────────
+# 출판사 매입률 정보
+# ─────────────────────────────────────────────
+PUBLISHERS = [
+    {"name": "마린북스", "margin": 40, "min_free_shipping": 15000},
+    {"name": "아카데미소프트", "margin": 40, "min_free_shipping": 15000},
+    {"name": "렉스미디어", "margin": 40, "min_free_shipping": 15000},
+    {"name": "해람북스", "margin": 40, "min_free_shipping": 15000},
+    {"name": "웰북", "margin": 40, "min_free_shipping": 15000},
+    {"name": "크라운", "margin": 55, "min_free_shipping": 15000},
+    {"name": "영진", "margin": 55, "min_free_shipping": 15000},
+    {"name": "매스티안", "margin": 55, "min_free_shipping": 15000},
+    {"name": "소마", "margin": 60, "min_free_shipping": 18000},
+    {"name": "씨투엠에듀", "margin": 60, "min_free_shipping": 18000},
+    {"name": "이퓨처", "margin": 60, "min_free_shipping": 18000},
+    {"name": "사회평론", "margin": 60, "min_free_shipping": 18000},
+    {"name": "길벗", "margin": 60, "min_free_shipping": 18000},
+    {"name": "이지스퍼블리싱", "margin": 60, "min_free_shipping": 18000},
+    {"name": "이지스에듀", "margin": 60, "min_free_shipping": 18000},
+    {"name": "나눔에이엔티", "margin": 60, "min_free_shipping": 18000},
+    {"name": "배움", "margin": 60, "min_free_shipping": 18000},
+    {"name": "혜지원", "margin": 60, "min_free_shipping": 18000},
+    {"name": "디지털북스", "margin": 60, "min_free_shipping": 18000},
+    {"name": "생각의집", "margin": 60, "min_free_shipping": 18000},
+    {"name": "예림당", "margin": 60, "min_free_shipping": 18000},
+    {"name": "개념원리", "margin": 65, "min_free_shipping": 20500},
+    {"name": "개념원리수학연구소", "margin": 65, "min_free_shipping": 20500},
+    {"name": "이투스", "margin": 65, "min_free_shipping": 20500},
+    {"name": "이투스북", "margin": 65, "min_free_shipping": 20500},
+    {"name": "비상교육", "margin": 65, "min_free_shipping": 20500},
+    {"name": "능률교육", "margin": 65, "min_free_shipping": 20500},
+    {"name": "지학사", "margin": 65, "min_free_shipping": 20500},
+    {"name": "수경출판사", "margin": 65, "min_free_shipping": 20500},
+    {"name": "쏠티북스", "margin": 65, "min_free_shipping": 20500},
+    {"name": "마더텅", "margin": 65, "min_free_shipping": 20500},
+    {"name": "한빛미디어", "margin": 65, "min_free_shipping": 20500},
+    {"name": "시대고시", "margin": 65, "min_free_shipping": 20500},
+    {"name": "성안당", "margin": 65, "min_free_shipping": 20500},
+    {"name": "다락원", "margin": 65, "min_free_shipping": 20500},
+    {"name": "에이콘", "margin": 65, "min_free_shipping": 20500},
+    {"name": "쎄듀", "margin": 65, "min_free_shipping": 20500},
+    {"name": "에듀윌", "margin": 65, "min_free_shipping": 20500},
+    {"name": "디딤돌", "margin": 65, "min_free_shipping": 20500},
+    {"name": "꿈을담는틀", "margin": 65, "min_free_shipping": 20500},
+    {"name": "미래엔에듀", "margin": 65, "min_free_shipping": 20500},
+    {"name": "미래엔", "margin": 65, "min_free_shipping": 20500},
+    {"name": "키출판사", "margin": 65, "min_free_shipping": 20500},
+    {"name": "에듀원", "margin": 62, "min_free_shipping": 18000},
+    {"name": "에듀플라자", "margin": 62, "min_free_shipping": 18000},
+    {"name": "베스트콜렉션", "margin": 62, "min_free_shipping": 18000},
+    {"name": "동아", "margin": 67, "min_free_shipping": 0},
+    {"name": "좋은책신사고", "margin": 70, "min_free_shipping": 0},
+    {"name": "한국교육방송공사", "margin": 73, "min_free_shipping": 0},
+    {"name": "EBS", "margin": 73, "min_free_shipping": 0},
+]
+
+
+def get_publisher_info(publisher_name: str):
+    """출판사 정보 조회 (margin, min_free_shipping 포함)"""
+    if not publisher_name:
+        return None
+    for p in PUBLISHERS:
+        if p["name"] in publisher_name or publisher_name in p["name"]:
+            return p
+    return None
+
+
+def get_publisher_names() -> list:
+    """취급 출판사 이름 리스트"""
+    return [p["name"] for p in PUBLISHERS]
+
+
 def resolve_distributor(publisher_name: str) -> str:
     """출판사명 → 거래처명"""
     if not publisher_name:

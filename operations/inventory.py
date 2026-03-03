@@ -5,8 +5,8 @@ import os
 import pandas as pd
 
 from core.config import AnalysisConfig
-from core.database import CoupangDB
-from core.models import InventoryProduct
+from core.database import SessionLocal
+from core.models import Account, InventoryProduct
 
 # Wing Excel 컬럼명 → 내부 필드명 매핑
 # Wing "쿠팡상품정보 수정요청" 템플릿 형식 + 기타 변형 지원
@@ -55,6 +55,15 @@ WING_COLUMN_MAP = {
     "Product ID": "wing_product_id",
 }
 
+# InventoryProduct에 실제로 존재하는 필드
+_INVENTORY_FIELDS = {
+    "seller_product_id", "product_name", "sale_price", "original_price",
+    "status", "category", "brand", "barcode", "stock_qty", "wing_product_id", "memo",
+}
+
+# 숫자로 변환해야 하는 필드
+_NUMERIC_FIELDS = {"sale_price", "original_price", "stock_qty"}
+
 
 def detect_columns(df: pd.DataFrame) -> dict[str, str]:
     """DataFrame 컬럼을 자동 인식하여 매핑 반환.
@@ -92,17 +101,26 @@ def _detect_wing_format(filepath: str) -> dict:
     return {"sheet": 0, "header": 0, "format": "generic"}
 
 
+def _coerce_value(field: str, val):
+    """필드 타입에 맞게 값 변환. 실패 시 None 반환."""
+    if field in _NUMERIC_FIELDS:
+        try:
+            return int(float(str(val).replace(",", "")))
+        except (ValueError, TypeError):
+            return None
+    return val
+
+
 def import_wing_excel(filepath: str, account_code: str, config: AnalysisConfig = None) -> dict:
     """Wing Excel 파일을 읽어 DB에 upsert.
 
     Returns:
         {"total": int, "new": int, "updated": int, "skipped": int}
     """
-    config = config or AnalysisConfig()
-    db = CoupangDB(config)
+    db = SessionLocal()
 
     # 계정 확인
-    account = db.get_account_by_code(account_code)
+    account = db.query(Account).filter(Account.account_code == account_code).first()
     if not account:
         print(f"  계정 '{account_code}'을(를) 찾을 수 없습니다. 먼저 계정을 추가하세요.")
         db.close()
@@ -160,24 +178,39 @@ def import_wing_excel(filepath: str, account_code: str, config: AnalysisConfig =
             skip_count += 1
             continue
 
-        product = InventoryProduct.from_wing_row(mapped, account.id)
-        _, is_new = db.upsert_inventory_product(product)
+        # 기존 레코드 조회
+        existing = db.query(InventoryProduct).filter(
+            InventoryProduct.account_id == account.id,
+            InventoryProduct.seller_product_id == mapped["seller_product_id"],
+        ).first()
+
+        if existing:
+            # 업데이트
+            for k, v in mapped.items():
+                if k in _INVENTORY_FIELDS and v:
+                    v = _coerce_value(k, v)
+                    if v is not None:
+                        setattr(existing, k, v)
+            is_new = False
+        else:
+            # 신규 생성
+            kwargs = {"account_id": account.id}
+            for k, v in mapped.items():
+                if k in _INVENTORY_FIELDS and v:
+                    v = _coerce_value(k, v)
+                    if v is not None:
+                        kwargs[k] = v
+            db.add(InventoryProduct(**kwargs))
+            is_new = True
 
         if is_new:
             new_count += 1
         else:
             update_count += 1
 
-    # 스냅샷 기록
-    total = new_count + update_count
-    db.create_inventory_snapshot(
-        account_id=account.id,
-        source_file=os.path.basename(filepath),
-        total=total,
-        new=new_count,
-        updated=update_count,
-    )
+    db.commit()
 
+    total = new_count + update_count
     result = {"total": total, "new": new_count, "updated": update_count, "skipped": skip_count}
     print(f"  임포트 완료: 전체 {total} (신규 {new_count}, 갱신 {update_count}, 건너뜀 {skip_count})")
     db.close()

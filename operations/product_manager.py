@@ -18,10 +18,10 @@ import sys
 
 from dotenv import load_dotenv
 
-load_dotenv(r"C:\Users\MSI\Desktop\Coupong\.env")
+load_dotenv()  # .env from 쿠팡비즈니스 root
 
 from core.api.wing_client import CoupangWingClient, CoupangWingError
-from core.database import CoupangDB
+from core.database import CoupangDB  # 호환 래퍼 (SessionLocal 기반)
 from core.config import AnalysisConfig
 
 
@@ -145,19 +145,32 @@ def list_products(account: str, status: str = "", search: str = "",
         [{sellerProductId, name, status, status_kr, salePrice, searchTags, brand}, ...]
     """
     client = _get_client(account)
-    products = client.list_selling_products(status=status)
+    products = client.list_products()
+
+    # API 응답: statusName(한국어) 기준, status(영문) 기준 양쪽 지원
+    STATUS_NAME_MAP = {"승인완료": "APPROVED", "임시저장": "DRAFT", "승인대기": "PENDING"}
+    if status:
+        products = [
+            p for p in products
+            if STATUS_NAME_MAP.get(p.get("statusName", ""), p.get("status", "")) == status
+        ]
 
     if search:
         search_lower = search.lower()
-        products = [p for p in products if search_lower in p["name"].lower()]
+        products = [
+            p for p in products
+            if search_lower in p.get("sellerProductName", "").lower()
+        ]
 
     results = []
     for p in products[:limit]:
+        status_name = p.get("statusName", "")
+        status_code = STATUS_NAME_MAP.get(status_name, status_name)
         results.append({
             "sellerProductId": p["sellerProductId"],
-            "name": p["name"],
-            "status": p["status"],
-            "status_kr": STATUS_MAP.get(p["status"], p["status"]),
+            "name": p.get("sellerProductName", ""),
+            "status": status_code,
+            "status_kr": status_name or STATUS_MAP.get(status_code, status_code),
             "salePrice": p.get("salePrice", 0),
             "searchTags": p.get("searchTags", []),
             "brand": p.get("brand", ""),

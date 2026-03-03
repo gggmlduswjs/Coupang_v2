@@ -1,0 +1,4 @@
+# 로컬 개발 전용 (Playwright CLI 수집 포함)
+# 사용법: pip install -r requirements-local.txt
+-r requirements.txt
+playwright>=1.40.0
