@@ -34,43 +34,73 @@ def _match_cred(creds: dict, account_name: str) -> dict:
     )
 
 
-def _login_iframe(account_name: str, wing_id: str, wing_pw: str) -> str:
+def _card_html(account_name: str, wing_id: str, wing_pw: str) -> str:
     """
-    버튼 클릭 → Wing 새 탭 열기 + PW 클립보드 복사
-    (Akamai 보안으로 form POST가 차단되어 이 방식 사용)
+    ① Wing 열기 버튼  — 새 탭 열기 + PW 클립보드 복사
+    ② 북마클릿 링크   — 북마크 바에 드래그해두면 Wing 로그인 페이지에서
+                        클릭 한 번으로 ID/PW 자동 입력 + 로그인 버튼 클릭
     """
-    safe_id = str(wing_id).replace("'", "\\'").replace('"', '\\"')
-    safe_pw = str(wing_pw).replace("'", "\\'").replace('"', '\\"')
-    safe_name = str(account_name).replace("<", "").replace(">", "")
+    eid  = wing_id.replace("'", "\\'").replace("`", "\\`")
+    epw  = wing_pw.replace("'", "\\'").replace("`", "\\`")
+    name = account_name.replace("<", "").replace(">", "")
+
+    # 북마클릿 JS: React 이벤트 호환 value setter 사용
+    bm_js = (
+        "javascript:(function(){"
+        "function fill(el,v){"
+        "var s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"
+        "s.call(el,v);"
+        "el.dispatchEvent(new Event('input',{bubbles:true}));"
+        "el.dispatchEvent(new Event('change',{bubbles:true}));}"
+        f"var t=document.querySelector('input[type=text],input[type=tel],input[type=email]');"
+        f"var p=document.querySelector('input[type=password]');"
+        f"if(t)fill(t,'{eid}');"
+        f"if(p)fill(p,'{epw}');"
+        "setTimeout(function(){"
+        "var b=document.querySelector('button[type=submit]');"
+        "if(b)b.click();"
+        "},400);"
+        "})();"
+    )
+
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-  * {{box-sizing:border-box;margin:0;padding:0;}}
-  body {{padding:2px;font-family:sans-serif;}}
-  .btn {{
-    width:100%;height:44px;
-    background:#E4002B;color:#fff;
-    border:none;border-radius:8px;
-    font-size:15px;font-weight:700;
-    cursor:pointer;letter-spacing:0.3px;
-    transition:opacity .15s;
-  }}
-  .btn:hover {{opacity:.85;}}
-  .msg {{
-    display:none;margin-top:4px;
-    font-size:12px;color:#555;text-align:center;
-  }}
+*{{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif;}}
+body{{padding:2px;}}
+.open{{
+  display:block;width:100%;height:42px;
+  background:#E4002B;color:#fff;
+  border:none;border-radius:8px;
+  font-size:14px;font-weight:700;cursor:pointer;
+  transition:opacity .15s;
+}}
+.open:hover{{opacity:.85;}}
+.row{{display:flex;align-items:center;gap:6px;margin-top:6px;}}
+.bm{{
+  flex:1;padding:7px 0;text-align:center;
+  background:#fff3cd;color:#856404;
+  border:1px dashed #ffc107;border-radius:6px;
+  font-size:12px;font-weight:600;text-decoration:none;
+  cursor:grab;white-space:nowrap;
+}}
+.bm:hover{{background:#ffe69c;}}
+.tip{{font-size:11px;color:#888;}}
+.msg{{display:none;font-size:11px;color:#198754;margin-top:3px;text-align:center;}}
 </style>
-</head>
-<body>
-<button class="btn" onclick="
-  navigator.clipboard.writeText('{safe_pw}').catch(()=>{{}});
+</head><body>
+<button class="open" onclick="
+  navigator.clipboard.writeText('{epw}').catch(()=>{{}});
   window.open('https://wing.coupang.com','_blank');
-  document.getElementById('msg').style.display='block';
-  this.textContent='✅ Wing 열림 — PW 복사됨';
-  setTimeout(()=>this.textContent='🚀 Wing 열기 — {safe_name}', 3000);
-">🚀 Wing 열기 — {safe_name}</button>
-<div class="msg" id="msg">ID: <b>{safe_id}</b> · PW가 클립보드에 복사됐습니다</div>
+  document.getElementById('m').style.display='block';
+  this.textContent='✅ 열림 — PW 복사됨';
+  setTimeout(()=>this.textContent='🚀 Wing 열기 — {name}',3000);
+">🚀 Wing 열기 — {name}</button>
+<div id="m" class="msg">PW 클립보드 복사됨 → Wing 탭에서 붙여넣기</div>
+<div class="row">
+  <a class="bm" href="{bm_js}" title="북마크 바에 드래그하세요">🔖 {name} 자동로그인</a>
+  <span class="tip">← 북마크 바에<br>드래그</span>
+</div>
 </body></html>"""
 
 
@@ -167,10 +197,9 @@ def render(selected_account, accounts_df, account_names):
                 st.caption(f"Vendor: `{vendor_id}`")
 
                 if wing_id and wing_pw:
-                    # 버튼 클릭 → Wing 열기 + PW 클립보드 복사
                     components.html(
-                        _login_iframe(name, wing_id, wing_pw),
-                        height=72,
+                        _card_html(name, wing_id, wing_pw),
+                        height=110,
                     )
                     st.caption(f"ID: `{wing_id}`")
 
@@ -185,20 +214,14 @@ def render(selected_account, accounts_df, account_names):
 
     # ── 안내 ──────────────────────────────────────────────
     st.divider()
-    with st.expander("❓ 자동 로그인이 안 될 때"):
+    with st.expander("💡 북마클릿 사용법 (한 번만 설정하면 진짜 자동 로그인)"):
         st.markdown("""
-**자동 로그인이 안 되는 주요 원인:**
+위 **노란 🔖 버튼**을 북마크 바에 드래그해두세요.
 
-1. **Wing 폼 필드명 불일치** — Wing 업데이트로 form field 이름이 바뀔 수 있음
-   - 해결: Wing 로그인 페이지에서 `F12 → Network → 로그인 → Request payload` 확인 후 알려주세요
+**사용 순서:**
+1. 🚀 버튼 클릭 → Wing 새 탭 열림
+2. Wing 로그인 페이지가 뜨면 → 북마크 바의 **🔖 계정명 자동로그인** 클릭
+3. ID/PW 자동 입력 + 로그인 버튼 자동 클릭 ✅
 
-2. **팝업 차단** — 브라우저가 새 탭을 차단할 수 있음
-   - 해결: 주소창 우측 팝업 허용 클릭
-
-3. **CSRF 토큰** — 일부 사이트는 세션 토큰 필요
-   - 해결: 위 ID/PW를 직접 복사해서 Wing에 붙여넣기
-
-**Wing 바로가기 링크:**
+**또는** Wing에서 **"로그인 유지"** 체크하면 한 번 로그인 후 몇 주간 유지됩니다.
 """)
-        st.markdown(" · ".join(f"[{n}](https://wing.coupang.com)" for n in names), unsafe_allow_html=False)
-        st.link_button("Wing 셀러센터 열기", "https://wing.coupang.com", key="_direct_wing_main")
