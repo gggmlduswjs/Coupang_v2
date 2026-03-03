@@ -252,7 +252,7 @@ def render(selected_account, accounts_df, account_names):
                     total += len(ordersheets)
 
         # 마지막 동기화 시각 기록
-        st.session_state["order_last_synced"] = datetime.now().strftime("%H:%M:%S")
+        st.session_state["order_last_synced"] = (datetime.utcnow() + timedelta(hours=9)).strftime("%H:%M:%S")
         return total
 
     def _clear_order_caches():
@@ -269,7 +269,7 @@ def render(selected_account, accounts_df, account_names):
                 with st.spinner("WING API 조회 중... (1~2분 소요)"):
                     _synced = _sync_live_orders()
                 _clear_order_caches()
-                st.session_state["order_last_synced"] = datetime.now().strftime("%H:%M:%S")
+                st.session_state["order_last_synced"] = (datetime.utcnow() + timedelta(hours=9)).strftime("%H:%M:%S")
                 st.success(f"✅ 완료: {_synced}건 갱신")
             except Exception as _e:
                 st.error(f"❌ 동기화 실패: {_e}")
