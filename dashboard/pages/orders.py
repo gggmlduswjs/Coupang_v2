@@ -868,7 +868,7 @@ def render(selected_account, accounts_df, account_names):
                     "주문시 출고예정일": _row.get("주문시출고예정일", ""),
                     "출고일(발송일)": "",
                     "주문일": _row.get("주문일시", _row.get("주문일", "")),
-                    "등록상품명": _row.get("상품명", ""),
+                    "등록상품명": str(_row.get("상품명") or ""),
                     "등록옵션명": _row.get("옵션명", ""),
                     "노출상품명(옵션명)": f"{_row.get('상품명', '')}, {_row.get('옵션명', '')}",
                     "노출상품ID": str(_row.get("_seller_product_id", "")),
@@ -902,21 +902,24 @@ def render(selected_account, accounts_df, account_names):
 
             _dl_df = pd.DataFrame(_dl_rows)
 
-            # ── 책별 픽킹 요약 표시 ──
+            # NaN 처리 — 정렬 오작동 방지
+            _dl_df["등록상품명"] = _dl_df["등록상품명"].fillna("").astype(str)
+
+            # 책 이름 순 정렬 (같은 책끼리 묶임) → 번호 재부여
+            _dl_df = _dl_df.sort_values(["등록상품명", "묶음배송번호"]).reset_index(drop=True)
+            _dl_df["번호"] = range(1, len(_dl_df) + 1)
+
+            # ── 책별 픽킹 요약 표시 (가나다 순) ──
             _pick_summary = (
                 _dl_df.groupby("등록상품명")
                 .agg(건수=("묶음배송번호", "count"), 총수량=("구매수(수량)", "sum"))
-                .sort_values("건수", ascending=False)
+                .sort_index()  # 가나다 순
                 .reset_index()
             )
             _pick_summary.columns = ["도서명", "주문건수", "총수량"]
             with st.expander(f"📚 책별 픽킹 요약 ({len(_pick_summary)}종)", expanded=True):
                 st.dataframe(_pick_summary, hide_index=True, use_container_width=True,
                              column_config={"도서명": st.column_config.TextColumn(width="large")})
-
-            # 책 이름 순 정렬 (같은 책끼리 묶임) → 번호 재부여
-            _dl_df = _dl_df.sort_values(["등록상품명", "묶음배송번호"]).reset_index(drop=True)
-            _dl_df["번호"] = range(1, len(_dl_df) + 1)
 
             # 엑셀 생성 — Sheet1: 배송리스트(책 순 정렬), Sheet2: 픽킹리스트
             _dl_buf = io.BytesIO()
