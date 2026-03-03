@@ -261,49 +261,36 @@ def render(selected_account, accounts_df, account_names):
         _load_all_orders_from_db.clear()
         st.cache_data.clear()
 
+    # ── 페이지 최초 진입 시 자동 동기화 (엄마가 버튼 안 눌러도 최신 주문 보임) ──
+    _AUTO_SYNC_KEY = "order_auto_synced_today"
+    import time as _time
+    _auto_sync_ts = st.session_state.get(_AUTO_SYNC_KEY, 0)
+    _AUTO_INTERVAL = 1800  # 30분마다 자동 동기화
+    if _time.time() - _auto_sync_ts > _AUTO_INTERVAL:
+        with st.spinner("주문 데이터 최신화 중..."):
+            try:
+                _sync_live_orders()
+                _clear_order_caches()
+                st.session_state[_AUTO_SYNC_KEY] = _time.time()
+            except Exception:
+                pass  # 자동 동기화 실패 시 조용히 넘어감
+
     # ── 상단 컨트롤 ──
-    _top_c1, _top_c2, _top_c3 = st.columns([2, 2, 3])
+    _top_c1, _top_c2 = st.columns([2, 5])
     with _top_c1:
-        if st.button("실시간 동기화", key="btn_live_refresh", use_container_width=True,
-                     help="전체 상태(결제완료~배송완료) 최근 7일 즉시 조회"):
-            with st.spinner("WING API 조회 중 (전체 상태)..."):
+        if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
+                     help="WING API에서 최근 7일 주문 즉시 조회", type="primary"):
+            with st.spinner("WING API 조회 중..."):
                 _synced = _sync_live_orders()
             _clear_order_caches()
-            st.success(f"동기화 완료: {_synced}건")
-            import time; time.sleep(0.5)
+            st.session_state[_AUTO_SYNC_KEY] = _time.time()
+            st.success(f"완료: {_synced}건 갱신")
+            _time.sleep(0.5)
             st.rerun()
     with _top_c2:
-        if st.button("전체 동기화 (7일)", key="btn_sync_orders", use_container_width=True):
-            try:
-                from scripts.sync.sync_orders import OrderSync
-                _syncer = OrderSync()
-                _sync_accounts = _syncer._get_accounts()
-                _sync_bar = st.progress(0, text="주문 동기화 시작...")
-                _sync_results = []
-                for _si, _sa in enumerate(_sync_accounts):
-                    _sync_bar.progress((_si) / len(_sync_accounts), text=f"[{_sa['account_name']}] 동기화 중...")
-                    _sr = _syncer.sync_account(
-                        _sa,
-                        date_from=date.today() - timedelta(days=7),
-                        date_to=date.today(),
-                    )
-                    _sync_results.append(_sr)
-                _sync_bar.progress(1.0, text="동기화 완료!")
-                _total_upserted = sum(r["upserted"] for r in _sync_results)
-                _total_fetched = sum(r["fetched"] for r in _sync_results)
-                _clear_order_caches()
-                st.success(f"동기화 완료: {len(_sync_accounts)}개 계정, {_total_fetched}건 조회, {_total_upserted}건 저장")
-                for _sr in _sync_results:
-                    st.caption(f"  [{_sr['account']}] 조회 {_sr['fetched']} / 저장 {_sr['upserted']} / 매칭 {_sr['matched']}")
-            except Exception as e:
-                st.error(f"동기화 오류: {e}")
-
-    with _top_c3:
         _last_synced = st.session_state.get("order_last_synced", None)
         if _last_synced:
-            st.caption(f"마지막 동기화: {_last_synced}")
-        else:
-            st.caption("5분마다 자동 갱신 | 버튼 클릭 시 즉시 동기화")
+            st.caption(f"마지막 동기화: {_last_synced} | 30분마다 자동 갱신")
 
     # ── 공통 유틸 ──
     _status_map = {
