@@ -188,6 +188,7 @@ def render(selected_account, accounts_df, account_names):
                         "Wing 열기 →",
                         "https://wing.coupang.com",
                         use_container_width=True,
+                        key=f"_card_wing_{name}",
                     )
                     st.warning("⚠️ ID/PW가 설정되지 않았습니다.\n위 설정 패널에서 입력하세요.")
 
@@ -208,5 +209,5 @@ def render(selected_account, accounts_df, account_names):
 
 **Wing 바로가기 링크:**
 """)
-        for name in names:
-            st.link_button(f"Wing → {name}", "https://wing.coupang.com", key=f"_direct_{name}")
+        st.markdown(" · ".join(f"[{n}](https://wing.coupang.com)" for n in names), unsafe_allow_html=False)
+        st.link_button("Wing 셀러센터 열기", "https://wing.coupang.com", key="_direct_wing_main")
