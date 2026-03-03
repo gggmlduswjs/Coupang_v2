@@ -67,7 +67,7 @@ if selected_account_name and not accounts_df.empty:
         selected_account = accounts_df[mask].iloc[0]
 
 st.sidebar.divider()
-page = st.sidebar.radio("메뉴", ["주문/배송", "상품", "매출/정산", "광고", "반품", "갭 분석", "위닝 관리", "Wing 바로가기"], key="sidebar_menu")
+page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "상품", "매출/정산", "광고", "반품", "갭 분석"], key="sidebar_menu")
 
 if selected_account is not None:
     st.sidebar.divider()
@@ -78,7 +78,11 @@ if selected_account is not None:
 
 
 # ─── 페이지 라우팅 ───
-if page == "주문/배송":
+if page == "Wing 바로가기":
+    from dashboard.pages.wing_login import render
+    render(selected_account, accounts_df, account_names)
+
+elif page == "주문/배송":
     from dashboard.pages.orders import render
     render(selected_account, accounts_df, account_names)
 
@@ -102,12 +106,5 @@ elif page == "갭 분석":
     from dashboard.pages.gap_analysis import render
     render(selected_account, accounts_df, account_names)
 
-elif page == "위닝 관리":
-    from dashboard.pages.winning import render
-    render(selected_account, accounts_df, account_names)
-
-elif page == "Wing 바로가기":
-    from dashboard.pages.wing_login import render
-    render(selected_account, accounts_df, account_names)
 
 
