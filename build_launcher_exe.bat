@@ -4,8 +4,8 @@ title Wing Launcher EXE 빌드
 
 cd /d "%~dp0"
 
-echo PyInstaller 설치 중...
-pip install pyinstaller flask flask-cors -q
+echo 의존성 설치 중...
+pip install pyinstaller websocket-client -q
 
 echo.
 echo EXE 빌드 중... (1~2분 소요)

@@ -1,26 +1,31 @@
 """
 Wing 셀러센터 바로가기
 ======================
-wing:// 커스텀 프로토콜로 Chrome 자동 열기
-Wing자동로그인.exe 최초 1회 실행으로 등록
+wing:// 커스텀 프로토콜로 Chrome 자동 열기 + 계정별 실시간 현황
 """
 import sys
 import json
+from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-# 로컬(Windows) vs Streamlit Cloud 판별
 _IS_LOCAL = sys.platform == "win32"
+_WING_CREDS_PATH = Path(__file__).resolve().parents[2] / "wing_creds.json"
 
 
 # ─────────────────────────────────────────
-# 자격증명 로드
+# 자격증명
 # ─────────────────────────────────────────
 
 def _load_creds() -> dict:
-    """session_state 우선 → st.secrets 폴백 (대소문자 무시)"""
     if "wing_creds_override" in st.session_state:
         return st.session_state["wing_creds_override"]
+    if _IS_LOCAL and _WING_CREDS_PATH.exists():
+        try:
+            raw = json.loads(_WING_CREDS_PATH.read_text(encoding="utf-8"))
+            return {k.lower(): {"id": v.get("id", ""), "pw": v.get("pw", "")} for k, v in raw.items()}
+        except Exception:
+            pass
     try:
         raw = dict(st.secrets.get("wing_creds", {}))
         result = {}
@@ -44,111 +49,129 @@ def _match_cred(creds: dict, account_name: str) -> dict:
 
 
 # ─────────────────────────────────────────
-# wing:// 프로토콜 버튼 + 북마클릿 카드
+# wing:// HTML 생성
 # ─────────────────────────────────────────
 
-def _launcher_buttons_html(names: list) -> str:
-    """
-    wing:// 커스텀 프로토콜 — Wing자동로그인.exe가 등록되어 있으면
-    버튼 클릭 시 Chrome이 바로 열림 (서버 불필요)
-    """
+def _launcher_html(names: list) -> str:
     names_js = json.dumps(names)
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-*{{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif;font-size:14px;}}
-body{{padding:4px;}}
-.info{{padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:12px;
-  background:#d1e7dd;color:#0a3622;}}
-.grid{{display:flex;flex-wrap:wrap;gap:6px;}}
-.btn-all{{width:100%;height:44px;background:#E4002B;color:#fff;border:none;
-  border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:8px;}}
+*{{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',sans-serif;font-size:14px;}}
+body{{padding:4px 0;}}
+.btn-all{{width:100%;height:48px;background:#E4002B;color:#fff;border:none;
+  border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;margin-bottom:10px;
+  transition:opacity .15s;}}
 .btn-all:hover{{opacity:.85;}}
-.btn-one{{flex:1;min-width:80px;height:36px;background:#fff;color:#333;
-  border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;}}
-.btn-one:hover{{background:#f5f5f5;}}
+.grid{{display:flex;gap:6px;}}
+.btn-one{{flex:1;height:38px;background:#fff;color:#333;
+  border:1.5px solid #ddd;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;
+  transition:all .15s;}}
+.btn-one:hover{{background:#f0f0f0;border-color:#E4002B;color:#E4002B;}}
 </style></head>
 <body>
-<div class="info">💡 Wing자동로그인.exe 최초 1회 실행 후 버튼 사용 가능</div>
-<button class="btn-all" onclick="openAll()">🚀 5개 계정 전부 열기</button>
+<button class="btn-all" onclick="location.href='wing://open-all'">5개 계정 전부 열기</button>
 <div class="grid" id="grid"></div>
-
 <script>
 const NAMES = {names_js};
-
-// 개별 버튼 생성
 const grid = document.getElementById('grid');
 NAMES.forEach(n => {{
   const b = document.createElement('button');
   b.className = 'btn-one';
   b.textContent = n;
-  b.onclick = () => openOne(n);
+  b.onclick = () => location.href = 'wing://open/' + n;
   grid.appendChild(b);
 }});
-
-function openAll() {{
-  window.location.href = 'wing://open-all';
-}}
-
-function openOne(name) {{
-  window.location.href = 'wing://open/' + name;
-}}
 </script>
 </body></html>"""
 
 
-def _card_html(account_name: str, wing_id: str, wing_pw: str) -> str:
-    eid  = wing_id.replace("'", "\\'").replace("`", "\\`")
-    epw  = wing_pw.replace("'", "\\'").replace("`", "\\`")
-    name = account_name.replace("<", "").replace(">", "")
+# ─────────────────────────────────────────
+# 주문 현황 데이터 로드
+# ─────────────────────────────────────────
 
-    bm_js = (
-        "javascript:(function(){"
-        "function fill(el,v){"
-        "var s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"
-        "s.call(el,v);"
-        "el.dispatchEvent(new Event('input',{bubbles:true}));"
-        "el.dispatchEvent(new Event('change',{bubbles:true}));}"
-        f"var t=document.querySelector('input[type=text],input[type=tel],input[type=email]');"
-        f"var p=document.querySelector('input[type=password]');"
-        f"if(t)fill(t,'{eid}');"
-        f"if(p)fill(p,'{epw}');"
-        "setTimeout(function(){"
-        "var b=document.querySelector('button[type=submit]');"
-        "if(b)b.click();"
-        "},400);"
-        "})();"
-    )
+_STATUS_MAP = {
+    "ACCEPT": ("결제완료", "#dc3545"),
+    "INSTRUCT": ("상품준비중", "#fd7e14"),
+    "DEPARTURE": ("배송지시", "#0d6efd"),
+    "DELIVERING": ("배송중", "#6f42c1"),
+    "FINAL_DELIVERY": ("배송완료", "#198754"),
+}
 
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-*{{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif;}}
-body{{padding:2px;}}
-.open{{display:block;width:100%;height:42px;background:#E4002B;color:#fff;
-  border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:opacity .15s;}}
-.open:hover{{opacity:.85;}}
-.row{{display:flex;align-items:center;gap:6px;margin-top:6px;}}
-.bm{{flex:1;padding:7px 0;text-align:center;background:#fff3cd;color:#856404;
-  border:1px dashed #ffc107;border-radius:6px;font-size:12px;font-weight:600;
-  text-decoration:none;cursor:grab;white-space:nowrap;}}
-.bm:hover{{background:#ffe69c;}}
-.tip{{font-size:11px;color:#888;}}
-.msg{{display:none;font-size:11px;color:#198754;margin-top:3px;text-align:center;}}
-</style></head><body>
-<button class="open" onclick="
-  navigator.clipboard.writeText('{epw}').catch(()=>{{}});
-  window.open('https://wing.coupang.com','_blank');
-  document.getElementById('m').style.display='block';
-  this.textContent='✅ 열림 — PW 복사됨';
-  setTimeout(()=>this.textContent='🚀 Wing 열기 — {name}',3000);
-">🚀 Wing 열기 — {name}</button>
-<div id="m" class="msg">PW 복사됨 → Wing 탭에서 붙여넣기</div>
-<div class="row">
-  <a class="bm" href="{bm_js}" title="북마크 바에 드래그">🔖 {name} 자동로그인</a>
-  <span class="tip">← 북마크 바에<br>드래그</span>
-</div>
-</body></html>"""
+
+@st.cache_data(ttl=30)
+def _load_order_stats() -> dict:
+    """계정별 주문 상태 집계. {account_name: {status: count, ...}, ...}"""
+    from dashboard.utils import query_df
+    df = query_df("""
+        SELECT a.account_name,
+               o.status,
+               COUNT(DISTINCT o.shipment_box_id) AS cnt
+        FROM orders o
+        JOIN accounts a ON o.account_id = a.id
+        WHERE a.is_active = true
+          AND o.canceled = false
+          AND o.ordered_at >= NOW() - INTERVAL '30 days'
+        GROUP BY a.account_name, o.status
+        ORDER BY a.account_name
+    """)
+    if df.empty:
+        return {}
+    result = {}
+    for _, row in df.iterrows():
+        name = row["account_name"]
+        if name not in result:
+            result[name] = {}
+        result[name][row["status"]] = int(row["cnt"])
+    return result
+
+
+@st.cache_data(ttl=60)
+def _load_product_counts() -> dict:
+    """계정별 활성 상품 수. {account_name: count}"""
+    from dashboard.utils import query_df
+    df = query_df("""
+        SELECT a.account_name, COUNT(*) AS cnt
+        FROM listings l
+        JOIN accounts a ON l.account_id = a.id
+        WHERE a.is_active = true
+          AND l.coupang_status = 'active'
+        GROUP BY a.account_name
+    """)
+    if df.empty:
+        return {}
+    return dict(zip(df["account_name"], df["cnt"]))
+
+
+# ─────────────────────────────────────────
+# 계정 카드 렌더링
+# ─────────────────────────────────────────
+
+def _render_account_card(name: str, stats: dict, product_count: int):
+    """단일 계정의 KPI 카드"""
+    st.markdown(f"### {name}")
+
+    cols = st.columns(6)
+    # 주문 상태 5개
+    for i, (status_key, (label, color)) in enumerate(_STATUS_MAP.items()):
+        count = stats.get(status_key, 0)
+        with cols[i]:
+            st.markdown(
+                f"<div style='text-align:center;padding:8px 0;'>"
+                f"<div style='font-size:12px;color:#666;'>{label}</div>"
+                f"<div style='font-size:28px;font-weight:700;color:{color};'>{count:,}건</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+    # 활성 상품 수
+    with cols[5]:
+        st.markdown(
+            f"<div style='text-align:center;padding:8px 0;'>"
+            f"<div style='font-size:12px;color:#666;'>활성상품</div>"
+            f"<div style='font-size:28px;font-weight:700;color:#333;'>{product_count:,}건</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
 
 # ─────────────────────────────────────────
@@ -156,7 +179,7 @@ body{{padding:2px;}}
 # ─────────────────────────────────────────
 
 def render(selected_account, accounts_df, account_names):
-    st.title("🔐 Wing 셀러센터 바로가기")
+    st.title("Wing 자동 열기")
 
     if accounts_df.empty:
         st.warning("활성 계정이 없습니다.")
@@ -165,10 +188,12 @@ def render(selected_account, accounts_df, account_names):
     creds = _load_creds()
     names = accounts_df["account_name"].tolist()
 
-    # ── 자격증명 설정 ──────────────────────────────────────
+    # ── wing:// 버튼 ────────────────────────────
+    components.html(_launcher_html(names), height=105)
+
+    # ── 자격증명 설정 (접힘) ─────────────────────
     all_set = all(_match_cred(creds, n).get("id") and _match_cred(creds, n).get("pw") for n in names)
-    with st.expander(f"⚙️ Wing 로그인 정보 설정{'  ✅' if all_set else '  ⚠️ 미설정'}", expanded=not all_set):
-        st.caption("Streamlit Secrets(`wing_creds`)에 저장하면 매번 입력 불필요")
+    with st.expander(f"Wing 로그인 정보 설정{'  ✅' if all_set else '  ⚠️ 미설정'}", expanded=False):
         edited = {}
         for name in names:
             ex = _match_cred(creds, name)
@@ -178,88 +203,52 @@ def render(selected_account, accounts_df, account_names):
             with c2:
                 wpw = st.text_input(f"{name} PW", value=ex.get("pw", ""), type="password", key=f"_wpw_{name}")
             edited[name] = {"id": wid, "pw": wpw}
-        if st.button("💾 저장 (이 세션)", type="primary", key="_wcred_save"):
-            st.session_state["wing_creds_override"] = edited
-            st.rerun()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("저장 (이 세션)", type="primary", key="_wcred_save"):
+                st.session_state["wing_creds_override"] = edited
+                st.rerun()
+        with c2:
+            if _IS_LOCAL:
+                if st.button("로컬에 저장 (wing:// 자동로그인용)", key="_wcred_local_save"):
+                    try:
+                        out = {n: {"id": v["id"], "pw": v["pw"]} for n, v in edited.items() if v.get("id") and v.get("pw")}
+                        _WING_CREDS_PATH.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+                        st.success("wing_creds.json 저장됨")
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+            else:
+                out = {n: {"id": v["id"], "pw": v["pw"]} for n, v in edited.items() if v.get("id") and v.get("pw")}
+                if out:
+                    st.download_button("wing_creds.json 다운로드", json.dumps(out, ensure_ascii=False, indent=2),
+                                       file_name="wing_creds.json", mime="application/json", key="_wcred_dl")
 
     st.divider()
-    creds = _load_creds()
 
-    # ════════════════════════════════════════
-    # wing:// 프로토콜 버튼
-    # ════════════════════════════════════════
-    st.subheader("🚀 Wing 자동 열기")
+    # ── 계정별 실시간 현황 ───────────────────────
+    st.subheader("계정별 현황")
 
-    launcher_html = _launcher_buttons_html(names)
-    components.html(launcher_html, height=180)
+    order_stats = _load_order_stats()
+    product_counts = _load_product_counts()
+
+    # 전체 합산 KPI
+    total_stats = {}
+    for acct_stats in order_stats.values():
+        for status_key, cnt in acct_stats.items():
+            total_stats[status_key] = total_stats.get(status_key, 0) + cnt
+    total_products = sum(product_counts.values())
+
+    cols = st.columns(6)
+    for i, (status_key, (label, color)) in enumerate(_STATUS_MAP.items()):
+        count = total_stats.get(status_key, 0)
+        cols[i].metric(label, f"{count:,}건")
+    cols[5].metric("활성상품", f"{total_products:,}건")
 
     st.divider()
 
-    # ════════════════════════════════════════
-    # wing:// 설치 안내
-    # ════════════════════════════════════════
-    with st.expander("🛠️ 최초 설치 방법 (한 번만)", expanded=False):
-        st.markdown("""
-**Wing자동로그인.exe 한 번만 실행하면 위 버튼이 동작합니다.**
-
-1. `dist\\Wing자동로그인.exe` 파일을 엄마 PC에 복사
-2. 더블클릭해서 한 번 실행 (wing:// 프로토콜 자동 등록)
-3. 이후 위 🚀 버튼 클릭 → Chrome이 바로 열림
-
-**EXE 파일 빌드 방법 (개발 PC에서):**
-```
-build_launcher_exe.bat 실행
-→ dist\\Wing자동로그인.exe 생성
-```
-""")
-
-    if _IS_LOCAL:
-        return   # 로컬 모드는 여기서 끝
-
-    # ════════════════════════════════════════
-    # Cloud 모드: 북마클릿 + PW 복사
-    # ════════════════════════════════════════
-    st.caption("☁️ Cloud에서는 브라우저를 직접 열 수 없어요. 북마클릿을 북마크 바에 드래그해두면 Wing 로그인 페이지에서 자동 입력됩니다.")
-
-    col_count = min(len(accounts_df), 3)
-    cols = st.columns(col_count)
-
-    for i, (_, acct) in enumerate(accounts_df.iterrows()):
-        name = acct["account_name"]
-        vendor_id = acct.get("vendor_id", "-")
-        cred = _match_cred(creds, name)
-        wing_id = cred.get("id", "")
-        wing_pw = cred.get("pw", "")
-
-        with cols[i % col_count]:
-            st.markdown(f"**{name}** `{vendor_id}`")
-            if wing_id and wing_pw:
-                components.html(_card_html(name, wing_id, wing_pw), height=110)
-                st.caption(f"ID: `{wing_id}`")
-            else:
-                st.markdown("[Wing 열기 →](https://wing.coupang.com)")
-                st.warning("⚠️ ID/PW 미설정")
-            st.divider()
-
-    with st.expander("💡 북마클릿 사용법"):
-        st.markdown("""
-1. 노란 **🔖 버튼**을 브라우저 북마크 바에 드래그
-2. 🚀 버튼 클릭 → Wing 새 탭 열림
-3. Wing 로그인 페이지에서 북마클릿 클릭 → ID/PW 자동 입력 + 로그인
-
-**또는** Wing "로그인 유지" 체크 → 몇 주간 자동 유지
-""")
-
-    with st.expander("🔍 Secrets 진단"):
-        try:
-            raw_keys = list(st.secrets.get("wing_creds", {}).keys())
-            st.success(f"wing_creds 키 {len(raw_keys)}개: `{raw_keys}`")
-        except Exception as e:
-            st.error(f"wing_creds 로드 실패: {e}")
-        for _, acct in accounts_df.iterrows():
-            nm = acct["account_name"]
-            c = _match_cred(creds, nm)
-            if c.get("id") and c.get("pw"):
-                st.success(f"✅ `{nm}` → ID: `{c['id']}` / PW: {'*' * len(c['pw'])}")
-            else:
-                st.error(f"❌ `{nm}` → 매칭 안 됨")
+    # 계정별 카드
+    for name in names:
+        stats = order_stats.get(name, {})
+        pc = product_counts.get(name, 0)
+        _render_account_card(name, stats, pc)
+        st.divider()
