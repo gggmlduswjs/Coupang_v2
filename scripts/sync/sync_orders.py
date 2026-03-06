@@ -14,6 +14,7 @@ import sys
 import json
 import argparse
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import List, Optional, Callable
@@ -151,15 +152,61 @@ class OrderSync:
             listing_id=EXCLUDED.listing_id, raw_json=EXCLUDED.raw_json, updated_at=EXCLUDED.updated_at
     """
 
+    def _build_params(self, account_id: int, status: str, os_data: dict, item: dict) -> Optional[dict]:
+        """단일 주문 아이템 → DB 파라미터 변환"""
+        shipment_box_id = os_data.get("shipmentBoxId")
+        order_id = os_data.get("orderId")
+        if not shipment_box_id or not order_id:
+            return None
+
+        v_item_id = item.get("vendorItemId") or os_data.get("vendorItemId")
+        sp_id = item.get("sellerProductId") or os_data.get("sellerProductId")
+        sp_name = item.get("sellerProductName") or os_data.get("sellerProductName", "")
+
+        orderer = os_data.get("orderer") or {}
+        receiver = os_data.get("receiver") or {}
+        addr1 = receiver.get("addr1", "") or ""
+        addr2 = receiver.get("addr2", "") or ""
+
+        return {
+            "account_id": account_id,
+            "shipment_box_id": int(shipment_box_id),
+            "order_id": int(order_id),
+            "vendor_item_id": int(v_item_id) if v_item_id else 0,
+            "status": status,
+            "ordered_at": self._parse_datetime(os_data.get("orderedAt")),
+            "paid_at": self._parse_datetime(os_data.get("paidAt")),
+            "orderer_name": orderer.get("name", ""),
+            "receiver_name": receiver.get("name", ""),
+            "receiver_addr": f"{addr1} {addr2}".strip(),
+            "receiver_post_code": receiver.get("postCode", ""),
+            "product_id": int(item.get("productId") or 0) or None,
+            "seller_product_id": int(sp_id) if sp_id else None,
+            "seller_product_name": sp_name,
+            "vendor_item_name": item.get("vendorItemName") or "",
+            "shipping_count": int(item.get("shippingCount", 0) or 0),
+            "cancel_count": int(item.get("cancelCount", 0) or 0),
+            "hold_count_for_cancel": int(item.get("holdCountForCancel", 0) or 0),
+            "sales_price": self._extract_price(item.get("salesPrice")),
+            "order_price": self._extract_price(item.get("orderPrice")),
+            "discount_price": self._extract_price(item.get("discountPrice")),
+            "shipping_price": self._extract_price(os_data.get("shippingPrice")),
+            "delivery_company_name": os_data.get("deliveryCompanyName", ""),
+            "invoice_number": os_data.get("invoiceNumber", ""),
+            "shipment_type": os_data.get("shipmentType", ""),
+            "delivered_date": self._parse_datetime(os_data.get("deliveredDate")),
+            "confirm_date": self._parse_datetime(item.get("confirmDate")),
+            "refer": os_data.get("refer", ""),
+            "canceled": bool(item.get("canceled", False)),
+            "listing_id": None,
+            "raw_json": json.dumps(os_data, ensure_ascii=False, default=str)[:5000],
+            "updated_at": datetime.now().isoformat(),
+        }
+
     def sync_account(self, account: dict, date_from: date, date_to: date,
                      statuses: List[str] = None,
                      progress_callback: Callable = None) -> dict:
-        """
-        계정 1개의 주문 동기화
-
-        Returns:
-            {"account": str, "fetched": int, "upserted": int, "matched": int}
-        """
+        """계정 1개의 주문 동기화 (API 병렬 + DB 배치)"""
         account_id = account["id"]
         account_name = account["account_name"]
         client = self._create_client(account)
@@ -169,107 +216,54 @@ class OrderSync:
 
         logger.info(f"[{account_name}] 주문 동기화 시작: {date_from} ~ {date_to}")
 
-        # 날짜 범위를 31일 윈도우로 분할
         windows = self._split_date_range(date_from, date_to)
-        total_fetched = 0
+
+        # 1) API 병렬 호출: 모든 (윈도우, 상태) 조합을 동시에
+        all_results = []  # [(status, ordersheets), ...]
+
+        def _fetch(w_from, w_to, status):
+            try:
+                return status, client.get_all_ordersheets(w_from, w_to, status=status)
+            except CoupangWingError as e:
+                logger.error(f"  [{account_name}] API 오류 ({status}): {e}")
+                return status, []
+
+        with ThreadPoolExecutor(max_workers=len(statuses)) as pool:
+            futures = []
+            for w_from, w_to in windows:
+                for status in statuses:
+                    futures.append(pool.submit(_fetch, w_from, w_to, status))
+            for f in as_completed(futures):
+                all_results.append(f.result())
+
+        # 2) 파라미터 일괄 생성
+        all_params = []
+        for status, ordersheets in all_results:
+            if not ordersheets:
+                continue
+            for os_data in ordersheets:
+                for item in self._extract_order_items(os_data):
+                    params = self._build_params(account_id, status, os_data, item)
+                    if params:
+                        all_params.append(params)
+
+        total_fetched = len(all_params)
         total_upserted = 0
         total_matched = 0
 
-        for wi, (w_from, w_to) in enumerate(windows):
-            for status in statuses:
-                logger.info(f"  [{account_name}] 윈도우 {wi+1}/{len(windows)} 상태={status}: {w_from} ~ {w_to}")
-
-                try:
-                    ordersheets = client.get_all_ordersheets(w_from, w_to, status=status)
-                except CoupangWingError as e:
-                    logger.error(f"  [{account_name}] API 오류 ({status}): {e}")
-                    continue
-
-                if not ordersheets:
-                    continue
-
-                for os_data in ordersheets:
-                    shipment_box_id = os_data.get("shipmentBoxId")
-                    order_id = os_data.get("orderId")
-                    if not shipment_box_id or not order_id:
-                        continue
-
-                    order_items = self._extract_order_items(os_data)
-
-                    for item in order_items:
-                        total_fetched += 1
-                        v_item_id = item.get("vendorItemId") or os_data.get("vendorItemId")
-
-                        # listing 매칭 (3-level)
-                        sp_id = item.get("sellerProductId") or os_data.get("sellerProductId")
-                        sp_name = item.get("sellerProductName") or os_data.get("sellerProductName", "")
-
-                        # v5 응답: orderer/receiver가 중첩 객체, 가격은 {units, nanos} Object
-                        orderer = os_data.get("orderer") or {}
-                        receiver = os_data.get("receiver") or {}
-                        addr1 = receiver.get("addr1", "") or ""
-                        addr2 = receiver.get("addr2", "") or ""
-                        receiver_addr = f"{addr1} {addr2}".strip()
-
-                        params = {
-                            "account_id": account_id,
-                            "shipment_box_id": int(shipment_box_id),
-                            "order_id": int(order_id),
-                            "vendor_item_id": int(v_item_id) if v_item_id else 0,  # NULL → 0
-                            "status": status,
-                            "ordered_at": self._parse_datetime(os_data.get("orderedAt")),
-                            "paid_at": self._parse_datetime(os_data.get("paidAt")),
-                            "orderer_name": orderer.get("name", ""),
-                            "receiver_name": receiver.get("name", ""),
-                            "receiver_addr": receiver_addr,
-                            "receiver_post_code": receiver.get("postCode", ""),
-                            "product_id": int(item.get("productId") or 0) or None,
-                            "seller_product_id": int(sp_id) if sp_id else None,
-                            "seller_product_name": sp_name,
-                            "vendor_item_name": item.get("vendorItemName") or "",
-                            "shipping_count": int(item.get("shippingCount", 0) or 0),
-                            "cancel_count": int(item.get("cancelCount", 0) or 0),
-                            "hold_count_for_cancel": int(item.get("holdCountForCancel", 0) or 0),
-                            "sales_price": self._extract_price(item.get("salesPrice")),
-                            "order_price": self._extract_price(item.get("orderPrice")),
-                            "discount_price": self._extract_price(item.get("discountPrice")),
-                            "shipping_price": self._extract_price(os_data.get("shippingPrice")),
-                            "delivery_company_name": os_data.get("deliveryCompanyName", ""),
-                            "invoice_number": os_data.get("invoiceNumber", ""),
-                            "shipment_type": os_data.get("shipmentType", ""),
-                            "delivered_date": self._parse_datetime(os_data.get("deliveredDate")),
-                            "confirm_date": self._parse_datetime(item.get("confirmDate")),
-                            "refer": os_data.get("refer", ""),
-                            "canceled": bool(item.get("canceled", False)),
-                            "listing_id": None,
-                            "raw_json": json.dumps(os_data, ensure_ascii=False, default=str)[:5000],
-                            "updated_at": datetime.now().isoformat(),
-                        }
-
+        # 3) DB 배치 저장 (한 커넥션으로 일괄)
+        if all_params:
+            try:
+                with self.engine.connect() as conn:
+                    for params in all_params:
                         try:
-                            with self.engine.connect() as conn:
-                                # 3-level listing 매칭
-                                listing_id = match_listing(
-                                    conn, account_id,
-                                    vendor_item_id=v_item_id,
-                                    coupang_product_id=sp_id,
-                                    product_name=sp_name
-                                )
-                                if listing_id:
-                                    params["listing_id"] = listing_id
-                                    total_matched += 1
-
-                                conn.execute(text(self.UPSERT_SQL), params)
-                                conn.commit()
+                            conn.execute(text(self.UPSERT_SQL), params)
                             total_upserted += 1
-                        except SQLAlchemyError as e:
+                        except (SQLAlchemyError, ValueError, TypeError) as e:
                             logger.warning(f"  DB 오류: {e}")
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"  데이터 변환 오류: {e}")
-
-            if progress_callback:
-                progress_callback(wi + 1, len(windows),
-                                  f"[{account_name}] {wi+1}/{len(windows)} 윈도우 완료 ({total_fetched}건)")
+                    conn.commit()
+            except SQLAlchemyError as e:
+                logger.error(f"  [{account_name}] DB 배치 오류: {e}")
 
         result = {
             "account": account_name,
@@ -277,7 +271,7 @@ class OrderSync:
             "upserted": total_upserted,
             "matched": total_matched,
         }
-        logger.info(f"[{account_name}] 완료: 조회 {total_fetched}건, 저장 {total_upserted}건, 매칭 {total_matched}건")
+        logger.info(f"[{account_name}] 완료: 조회 {total_fetched}건, 저장 {total_upserted}건")
         return result
 
     @staticmethod
@@ -314,18 +308,22 @@ class OrderSync:
         date_to = date.today()
         date_from = date_to - timedelta(days=days)
 
-        logger.info(f"주문 동기화: {len(accounts)}개 계정, {date_from} ~ {date_to}")
+        logger.info(f"주문 동기화: {len(accounts)}개 계정, {date_from} ~ {date_to} (병렬)")
 
+        # 병렬 실행: 모든 계정 동시 처리
         results = []
-        for i, account in enumerate(accounts):
-            if progress_callback:
-                progress_callback(i, len(accounts),
-                                  f"{account['account_name']} 동기화 중...")
-
-            result = self.sync_account(account, date_from, date_to,
-                                       statuses=statuses,
-                                       progress_callback=progress_callback)
-            results.append(result)
+        with ThreadPoolExecutor(max_workers=len(accounts)) as pool:
+            futures = {
+                pool.submit(self.sync_account, account, date_from, date_to, statuses, progress_callback): account
+                for account in accounts
+            }
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    account = futures[future]
+                    logger.error(f"[{account['account_name']}] 병렬 동기화 오류: {e}")
+                    results.append({"account": account["account_name"], "fetched": 0, "upserted": 0, "matched": 0})
 
         if progress_callback:
             progress_callback(len(accounts), len(accounts), "동기화 완료!")
@@ -345,9 +343,16 @@ def main():
     parser.add_argument("--account", type=str, default=None, help="특정 계정명 (기본: 전체)")
     parser.add_argument("--status", type=str, default=None,
                         help="특정 상태만 (ACCEPT/INSTRUCT/DEPARTURE/DELIVERING/FINAL_DELIVERY/NONE_TRACKING)")
+    parser.add_argument("--quick", action="store_true",
+                        help="빠른 동기화: ACCEPT/INSTRUCT만 (1분 스케줄러용)")
     args = parser.parse_args()
 
-    statuses = [args.status] if args.status else None
+    if args.quick:
+        statuses = ["ACCEPT", "INSTRUCT"]
+    elif args.status:
+        statuses = [args.status]
+    else:
+        statuses = None
 
     syncer = OrderSync()
     results = syncer.sync_all(days=args.days, account_name=args.account, statuses=statuses)

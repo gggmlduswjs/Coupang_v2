@@ -810,16 +810,18 @@ def render(selected_account, accounts_df, account_names):
     # 탭3: 배송
     # ══════════════════════════════════════
     with _ord_tab3:
-        st.caption("상품준비중 주문 배송 처리: 주문 확인 → 배송리스트 → 송장 업로드")
+        st.caption("상품준비중 주문 배송 처리: 주문 확인 → 배송리스트 → 한진 송장 발급 → 쿠팡 송장 등록")
 
         # ── Step 워크플로우 표시 ──
-        _s1, _s2, _s3 = st.columns(3)
+        _s1, _s2, _s3, _s4 = st.columns(4)
         with _s1:
             st.markdown("**STEP 1** 주문 확인")
         with _s2:
             st.markdown("**STEP 2** 배송리스트")
         with _s3:
-            st.markdown("**STEP 3** 송장 업로드")
+            st.markdown("**STEP 3** 한진 송장")
+        with _s4:
+            st.markdown("**STEP 4** 쿠팡 등록")
 
         st.divider()
 
@@ -972,13 +974,13 @@ def render(selected_account, accounts_df, account_names):
                 type="primary",
                 use_container_width=True,
             )
-            st.caption("Sheet1: 한진택배 업로드용 (책 순 정렬) | Sheet2: 픽킹리스트 | 송장번호 받은 뒤 → STEP 3")
+            st.caption("Sheet1: 한진택배 업로드용 (책 순 정렬) | Sheet2: 픽킹리스트")
 
         st.divider()
 
-        # ── STEP 2.5: 한진 N-Focus 송장 발급 ──
-        st.subheader("STEP 2.5: 한진 N-Focus 송장 발급")
-        st.caption("STEP 2에서 다운로드한 배송리스트를 N-Focus에 업로드하여 송장번호를 자동 발급받습니다.")
+        # ── STEP 3: 한진 N-Focus 송장 발급 ──
+        st.subheader("STEP 3: 한진 N-Focus 송장 발급")
+        st.caption("STEP 2에서 다운로드한 배송리스트 엑셀을 업로드하면 N-Focus에서 송장을 자동 발급합니다.")
 
         _hanjin_creds = _load_hanjin_creds()
         if not _hanjin_creds.get("user_id"):
@@ -993,8 +995,7 @@ def render(selected_account, accounts_df, account_names):
                     else:
                         st.warning("아이디와 비밀번호를 모두 입력하세요.")
         else:
-            st.info(f"N-Focus 계정: {_hanjin_creds['user_id']}")
-            with st.expander("계정 변경"):
+            with st.expander(f"N-Focus 계정: {_hanjin_creds['user_id']}", expanded=False):
                 _hj_id = st.text_input("N-Focus 아이디", value=_hanjin_creds.get("user_id", ""), key="tab3_hanjin_id_edit")
                 _hj_pw = st.text_input("N-Focus 비밀번호", type="password", key="tab3_hanjin_pw_edit")
                 if st.button("변경 저장", key="tab3_hanjin_save_edit"):
@@ -1063,7 +1064,6 @@ def render(selected_account, accounts_df, account_names):
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     key="tab3_dl_nfocus_invoice",
                                 )
-                                st.info("STEP 3에 운송장이 자동 로드됩니다.")
                         else:
                             status.update(label="N-Focus 처리 실패", state="error")
                 except HanjinNFocusError as e:
@@ -1079,23 +1079,14 @@ def render(selected_account, accounts_df, account_names):
 
         st.divider()
 
-        # ── STEP 3: 송장 엑셀 업로드 ──
-        st.subheader("STEP 3: 송장 엑셀 업로드")
-        st.caption("한진택배에서 송장번호를 받은 엑셀을 업로드하면 각 계정별로 자동 등록됩니다.")
-
-        # STEP 2.5에서 자동 전달된 송장 처리
-        _auto_invoice = st.session_state.get("hanjin_invoice_bytes")
-        _inv_df = None
-        if _auto_invoice:
-            st.success("STEP 2.5에서 받은 운송장 엑셀이 자동 로드되었습니다.")
-            try:
-                _inv_df = pd.read_excel(io.BytesIO(_auto_invoice))
-            except Exception as e:
-                st.warning(f"자동 로드 실패: {e} — 수동 업로드를 사용하세요.")
+        # ── STEP 4: 송장 엑셀 업로드 (쿠팡 등록) ──
+        st.subheader("STEP 4: 쿠팡 송장 등록")
+        st.caption("운송장번호가 포함된 엑셀을 업로드하면 각 계정별로 쿠팡에 자동 등록됩니다.")
 
         _inv_file = st.file_uploader("송장 엑셀 파일 (운송장번호 포함)", type=["xlsx", "xls"], key="tab3_inv_file_upload")
+        _inv_df = None
 
-        if _inv_file is not None and _inv_df is None:
+        if _inv_file is not None:
             try:
                 _inv_df = pd.read_excel(_inv_file)
             except Exception as e:

@@ -77,6 +77,14 @@ if os.environ.get("RAILWAY_ENVIRONMENT"):
     except Exception:
         pass
 
+if os.environ.get("RAILWAY_ENVIRONMENT"):
+    try:
+        import urllib.request
+        _server_ip = urllib.request.urlopen("https://api.ipify.org", timeout=5).read().decode()
+        st.sidebar.caption(f"서버 IP: {_server_ip}")
+    except Exception:
+        pass
+
 if selected_account is not None:
     st.sidebar.divider()
     st.sidebar.caption("계정 정보")
