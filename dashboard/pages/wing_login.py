@@ -5,7 +5,9 @@ wing:// 커스텀 프로토콜로 Chrome 자동 열기 + 계정별 실시간 현
 """
 import sys
 import json
+import subprocess
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -175,6 +177,50 @@ def _render_account_card(name: str, stats: dict, product_count: int):
 
 
 # ─────────────────────────────────────────
+# 주문 동기화 (새로고침)
+# ─────────────────────────────────────────
+
+_KST = timezone(timedelta(hours=9))
+
+
+def _run_order_sync():
+    """WING API에서 주문 데이터 실시간 동기화"""
+    with st.spinner("WING API에서 주문 동기화 중..."):
+        try:
+            from scripts.sync.sync_orders import OrderSync
+            syncer = OrderSync()
+            results = syncer.sync_all(days=1)
+
+            total_fetched = sum(r["fetched"] for r in results)
+            total_upserted = sum(r["upserted"] for r in results)
+            errors = [r["account"] for r in results if r["fetched"] == 0]
+
+            # 캐시 초기화
+            _load_order_stats.clear()
+            _load_product_counts.clear()
+
+            if errors and len(errors) == len(results):
+                st.error(f"API 동기화 실패 (IP 차단 가능성). 셀러센터에서 IP 등록을 확인하세요.")
+            elif errors:
+                st.warning(f"일부 계정 실패: {', '.join(errors)} | 성공: {total_upserted}건 저장")
+            else:
+                st.success(f"동기화 완료! {total_fetched}건 조회, {total_upserted}건 저장")
+        except Exception as e:
+            st.error(f"동기화 오류: {e}")
+
+
+def _show_last_sync_time():
+    """DB에서 마지막 동기화 시각 조회"""
+    from dashboard.utils import query_df
+    df = query_df("SELECT MAX(updated_at) AS last_sync FROM orders")
+    if not df.empty and df.iloc[0]["last_sync"] is not None:
+        last = df.iloc[0]["last_sync"]
+        if hasattr(last, "astimezone"):
+            last = last.astimezone(_KST)
+        st.caption(f"마지막 동기화: {last:%Y-%m-%d %H:%M:%S}")
+
+
+# ─────────────────────────────────────────
 # 메인 render
 # ─────────────────────────────────────────
 
@@ -226,7 +272,15 @@ def render(selected_account, accounts_df, account_names):
     st.divider()
 
     # ── 계정별 실시간 현황 ───────────────────────
-    st.subheader("계정별 현황")
+    c_title, c_btn = st.columns([3, 1])
+    with c_title:
+        st.subheader("계정별 현황")
+    with c_btn:
+        if st.button("주문 새로고침", type="primary", key="_sync_orders"):
+            _run_order_sync()
+
+    # 마지막 동기화 시각 표시
+    _show_last_sync_time()
 
     order_stats = _load_order_stats()
     product_counts = _load_product_counts()
