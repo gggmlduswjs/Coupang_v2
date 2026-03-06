@@ -69,6 +69,14 @@ if selected_account_name and not accounts_df.empty:
 st.sidebar.divider()
 page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "상품", "매출/정산", "광고", "반품", "갭 분석"], key="sidebar_menu")
 
+if sys.platform != "win32":
+    try:
+        import urllib.request
+        _server_ip = urllib.request.urlopen("https://api.ipify.org", timeout=5).read().decode()
+        st.sidebar.caption(f"서버 IP: {_server_ip}")
+    except Exception:
+        pass
+
 if selected_account is not None:
     st.sidebar.divider()
     st.sidebar.caption("계정 정보")
