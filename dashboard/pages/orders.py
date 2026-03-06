@@ -7,7 +7,9 @@ import io
 import json
 import logging
 import re
+import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from streamlit_autorefresh import st_autorefresh
 
 import pandas as pd
@@ -32,6 +34,24 @@ from dashboard.utils import (
     run_sql,
 )
 logger = logging.getLogger(__name__)
+
+_IS_LOCAL = sys.platform == "win32"
+_HANJIN_CREDS_PATH = Path(__file__).resolve().parents[2] / "hanjin_creds.json"
+
+
+def _load_hanjin_creds() -> dict:
+    if _IS_LOCAL and _HANJIN_CREDS_PATH.exists():
+        try:
+            return json.loads(_HANJIN_CREDS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_hanjin_creds(user_id: str, password: str):
+    data = {"user_id": user_id, "password": password}
+    _HANJIN_CREDS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 # ── 주문 DB 저장용 UPSERT SQL ──
 _UPSERT_ORDER_SQL = """
@@ -261,22 +281,24 @@ def render(selected_account, accounts_df, account_names):
         st.cache_data.clear()
 
     # ── 상단 컨트롤 ──
+    _is_local = sys.platform == "win32"
     _top_c1, _top_c2 = st.columns([2, 5])
     with _top_c1:
-        if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
-                     help="WING API에서 최근 7일 주문 즉시 조회", type="primary"):
-            try:
-                with st.spinner("WING API 조회 중... (1~2분 소요)"):
-                    _synced = _sync_live_orders()
-                _clear_order_caches()
-                st.session_state["order_last_synced"] = (datetime.utcnow() + timedelta(hours=9)).strftime("%H:%M:%S")
-                st.success(f"✅ 완료: {_synced}건 갱신")
-            except Exception as _e:
-                st.error(f"❌ 동기화 실패: {_e}")
+        if _is_local:
+            if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
+                         help="WING API에서 최근 7일 주문 즉시 조회", type="primary"):
+                try:
+                    with st.spinner("WING API 조회 중... (1~2분 소요)"):
+                        _synced = _sync_live_orders()
+                    _clear_order_caches()
+                    st.session_state["order_last_synced"] = (datetime.utcnow() + timedelta(hours=9)).strftime("%H:%M:%S")
+                    st.success(f"✅ 완료: {_synced}건 갱신")
+                except Exception as _e:
+                    st.error(f"❌ 동기화 실패: {_e}")
     with _top_c2:
         _last_synced = st.session_state.get("order_last_synced")
         if _last_synced:
-            st.caption(f"마지막 동기화: {_last_synced} | 2시간마다 자동 동기화")
+            st.caption(f"마지막 동기화: {_last_synced} | 10분마다 자동 동기화")
 
     # ── 공통 유틸 ──
     _status_map = {
@@ -546,10 +568,11 @@ def render(selected_account, accounts_df, account_names):
             with _po_col1:
                 st.caption("INSTRUCT(상품준비중) 주문 기반 · 배송 처리하면 자동으로 사라짐")
             with _po_col2:
-                if st.button("🔄 주문 새로고침", key="btn_po_sync", use_container_width=True, type="primary"):
-                    with st.spinner("INSTRUCT 주문 동기화 중..."):
-                        _synced = _sync_live_orders()
-                    st.success(f"완료 — {_synced}건 갱신")
+                if _is_local:
+                    if st.button("🔄 주문 새로고침", key="btn_po_sync", use_container_width=True, type="primary"):
+                        with st.spinner("INSTRUCT 주문 동기화 중..."):
+                            _synced = _sync_live_orders()
+                        st.success(f"완료 — {_synced}건 갱신")
                     _load_all_orders_from_db.clear()
                     st.rerun()
             with _po_col3:
@@ -952,16 +975,133 @@ def render(selected_account, accounts_df, account_names):
 
         st.divider()
 
+        # ── STEP 2.5: 한진 N-Focus 송장 발급 ──
+        st.subheader("STEP 2.5: 한진 N-Focus 송장 발급")
+        st.caption("STEP 2에서 다운로드한 배송리스트를 N-Focus에 업로드하여 송장번호를 자동 발급받습니다.")
+
+        _hanjin_creds = _load_hanjin_creds()
+        if not _hanjin_creds.get("user_id"):
+            with st.expander("한진 N-Focus 로그인 설정", expanded=True):
+                _hj_id = st.text_input("N-Focus 아이디", key="tab3_hanjin_id")
+                _hj_pw = st.text_input("N-Focus 비밀번호", type="password", key="tab3_hanjin_pw")
+                if st.button("저장", key="tab3_hanjin_save"):
+                    if _hj_id and _hj_pw:
+                        _save_hanjin_creds(_hj_id, _hj_pw)
+                        st.success("한진 크레덴셜 저장 완료")
+                        st.rerun()
+                    else:
+                        st.warning("아이디와 비밀번호를 모두 입력하세요.")
+        else:
+            st.info(f"N-Focus 계정: {_hanjin_creds['user_id']}")
+            with st.expander("계정 변경"):
+                _hj_id = st.text_input("N-Focus 아이디", value=_hanjin_creds.get("user_id", ""), key="tab3_hanjin_id_edit")
+                _hj_pw = st.text_input("N-Focus 비밀번호", type="password", key="tab3_hanjin_pw_edit")
+                if st.button("변경 저장", key="tab3_hanjin_save_edit"):
+                    if _hj_id and _hj_pw:
+                        _save_hanjin_creds(_hj_id, _hj_pw)
+                        st.success("한진 크레덴셜 업데이트 완료")
+                        st.rerun()
+
+        _nfocus_file = st.file_uploader(
+            "배송리스트 엑셀 (STEP 2에서 다운로드한 파일)",
+            type=["xlsx", "xls"],
+            key="tab3_nfocus_upload",
+        )
+
+        _nfocus_disabled = (
+            not _hanjin_creds.get("user_id")
+            or _nfocus_file is None
+            or st.session_state.get("nfocus_running", False)
+        )
+
+        if st.button(
+            "한진 N-Focus 자동 처리",
+            key="tab3_btn_nfocus",
+            type="primary",
+            disabled=_nfocus_disabled,
+            use_container_width=True,
+        ):
+            st.session_state["nfocus_running"] = True
+            try:
+                from operations.hanjin_nfocus import HanjinNFocusClient, HanjinNFocusError
+
+                _hc = _load_hanjin_creds()
+                client = HanjinNFocusClient(
+                    user_id=_hc["user_id"],
+                    password=_hc["password"],
+                    headless=False,
+                )
+                try:
+                    with st.status("N-Focus 처리 중...", expanded=True) as status:
+                        def _on_progress(msg: str):
+                            st.write(msg)
+
+                        _nf_result = client.process_full_workflow(
+                            excel_bytes=_nfocus_file.getvalue(),
+                            filename=_nfocus_file.name,
+                            progress_callback=_on_progress,
+                        )
+
+                        if _nf_result["success"]:
+                            status.update(label="N-Focus 처리 완료!", state="complete")
+                            st.success(
+                                f"정상 등록: {_nf_result['registered']}건"
+                                + (f" / 오류: {_nf_result['error']}건" if _nf_result["error"] else "")
+                            )
+                            if _nf_result["error_details"]:
+                                with st.expander("오류 상세"):
+                                    for _err in _nf_result["error_details"]:
+                                        st.warning(_err)
+
+                            if _nf_result["invoice_excel"]:
+                                st.session_state["hanjin_invoice_bytes"] = _nf_result["invoice_excel"]
+                                st.download_button(
+                                    "운송장 엑셀 다운로드",
+                                    _nf_result["invoice_excel"],
+                                    file_name=f"Invoice_{date.today().isoformat()}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="tab3_dl_nfocus_invoice",
+                                )
+                                st.info("STEP 3에 운송장이 자동 로드됩니다.")
+                        else:
+                            status.update(label="N-Focus 처리 실패", state="error")
+                except HanjinNFocusError as e:
+                    st.error(f"N-Focus 오류: {e}")
+                finally:
+                    client.close()
+            except ImportError:
+                st.error("playwright가 설치되지 않았습니다. `pip install playwright && playwright install chromium`")
+            except Exception as e:
+                st.error(f"오류 발생: {e}")
+            finally:
+                st.session_state["nfocus_running"] = False
+
+        st.divider()
+
         # ── STEP 3: 송장 엑셀 업로드 ──
         st.subheader("STEP 3: 송장 엑셀 업로드")
         st.caption("한진택배에서 송장번호를 받은 엑셀을 업로드하면 각 계정별로 자동 등록됩니다.")
 
+        # STEP 2.5에서 자동 전달된 송장 처리
+        _auto_invoice = st.session_state.get("hanjin_invoice_bytes")
+        _inv_df = None
+        if _auto_invoice:
+            st.success("STEP 2.5에서 받은 운송장 엑셀이 자동 로드되었습니다.")
+            try:
+                _inv_df = pd.read_excel(io.BytesIO(_auto_invoice))
+            except Exception as e:
+                st.warning(f"자동 로드 실패: {e} — 수동 업로드를 사용하세요.")
+
         _inv_file = st.file_uploader("송장 엑셀 파일 (운송장번호 포함)", type=["xlsx", "xls"], key="tab3_inv_file_upload")
 
-        if _inv_file is not None:
+        if _inv_file is not None and _inv_df is None:
             try:
                 _inv_df = pd.read_excel(_inv_file)
+            except Exception as e:
+                st.error(f"엑셀 파일 읽기 오류: {e}")
 
+        if _inv_df is not None:
+            try:
                 # 컬럼명 확인
                 _need_cols = ["묶음배송번호", "주문번호", "운송장번호"]
                 _missing = [c for c in _need_cols if c not in _inv_df.columns]
