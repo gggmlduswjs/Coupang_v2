@@ -215,8 +215,17 @@ def _show_last_sync_time():
     df = query_df("SELECT MAX(updated_at) AS last_sync FROM orders")
     if not df.empty and df.iloc[0]["last_sync"] is not None:
         last = df.iloc[0]["last_sync"]
-        if hasattr(last, "astimezone"):
-            last = last.astimezone(_KST)
+        try:
+            import pandas as pd
+            if isinstance(last, pd.Timestamp):
+                if last.tzinfo is None:
+                    last = last.tz_localize("UTC").tz_convert(_KST)
+                else:
+                    last = last.tz_convert(_KST)
+            elif hasattr(last, "astimezone"):
+                last = last.astimezone(_KST)
+        except Exception:
+            pass
         st.caption(f"마지막 동기화: {last:%Y-%m-%d %H:%M:%S}")
 
 
