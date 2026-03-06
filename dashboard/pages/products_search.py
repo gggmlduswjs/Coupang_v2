@@ -10,7 +10,7 @@ from dashboard.utils import (
     query_df, query_df_cached, run_sql, create_wing_client,
     engine, CoupangWingError,
 )
-from uploaders.coupang_api_uploader import CoupangAPIUploader
+from operations.uploader import CoupangAPIUploader
 from core.constants import (
     BOOK_DISCOUNT_RATE, COUPANG_FEE_RATE, DEFAULT_SHIPPING_COST,
     DEFAULT_STOCK,

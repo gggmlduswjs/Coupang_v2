@@ -11,7 +11,7 @@ from dashboard.utils import (
     query_df, query_df_cached, run_sql, create_wing_client,
     engine, CoupangWingError,
 )
-from uploaders.coupang_api_uploader import CoupangAPIUploader, _build_book_notices, _build_book_attributes
+from operations.uploader import CoupangAPIUploader, _build_book_notices, _build_book_attributes
 from core.constants import (
     WING_ACCOUNT_ENV_MAP, BOOK_CATEGORY_MAP, BOOK_DISCOUNT_RATE,
     COUPANG_FEE_RATE, DEFAULT_SHIPPING_COST, DEFAULT_STOCK,

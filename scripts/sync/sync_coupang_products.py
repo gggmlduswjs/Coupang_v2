@@ -41,7 +41,7 @@ from core.models.account import Account
 from core.models.listing import Listing
 from core.api.wing_client import CoupangWingClient, CoupangWingError
 from core.constants import WING_ACCOUNT_ENV_MAP
-from obsidian_logger import ObsidianLogger
+from core.obsidian_logger import ObsidianLogger
 
 logging.basicConfig(
     level=logging.INFO,

@@ -28,7 +28,7 @@ class ObsidianLogger:
             if gdrive:
                 self.vault = gdrive
             else:
-                self.vault = Path(__file__).parent / "obsidian_vault" / "10. project" / "Coupong"
+                self.vault = Path(__file__).parent.parent / "obsidian_vault" / "10. project" / "Coupong"
 
         # vault 없으면 기록 스킵 (G: 미연결 시)
         self.dirs = {
@@ -43,7 +43,7 @@ class ObsidianLogger:
 
     def _load_gdrive_path(self) -> Path | None:
         """.env에서 OBSIDIAN_VAULT_PATH 로드"""
-        env_path = Path(__file__).parent / ".env"
+        env_path = Path(__file__).parent.parent / ".env"
         if not env_path.exists():
             return None
         for line in env_path.read_text(encoding="utf-8").splitlines():

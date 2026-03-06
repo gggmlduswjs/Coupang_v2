@@ -30,7 +30,9 @@
 │   ├── uploader.py          # API 상품 등록
 │   ├── bundle_manager.py    # 세트물 관리 (통합)
 │   └── ...                  # backup, inventory, exposure 등
-├── cli/                 # CLI 인터페이스 (main.py)
+├── cli/                 # CLI 인터페이스
+│   ├── main.py          # argparse + dispatch (~550줄)
+│   └── commands/        # 핸들러 (analysis, management, upload, product, catalog)
 ├── dashboard/           # Streamlit 대시보드
 ├── scripts/             # 운영 스크립트 (카테고리별)
 ├── data/                # 런타임 데이터
