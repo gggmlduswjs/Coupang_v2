@@ -348,7 +348,7 @@ def render_tab_manual(account_id, selected_account, accounts_df, _wing_client):
                     if not _ttb_key:
                         st.error("ALADIN_TTB_KEY 환경변수가 설정되지 않았습니다.")
                     else:
-                        from crawlers.aladin_api_crawler import AladinAPICrawler
+                        from core.api.aladin_client import AladinAPICrawler
                         _crawler = AladinAPICrawler(ttb_key=_ttb_key)
                         _result = _crawler.search_by_isbn(_isbn_input)
                         if _result:

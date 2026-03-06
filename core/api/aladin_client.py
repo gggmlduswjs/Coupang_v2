@@ -1,7 +1,4 @@
 """알라딘 API 크롤러 (공식 API)"""
-import sys
-from pathlib import Path
-
 import requests
 from typing import List, Dict, Optional
 from datetime import datetime
