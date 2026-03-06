@@ -13,56 +13,17 @@ Update 전략:
 
 import copy
 import json
-import os
 import sys
 
 from dotenv import load_dotenv
 
-load_dotenv()  # .env from 쿠팡비즈니스 root
+load_dotenv()
 
+from core.accounts import ACCOUNTS, get_wing_client as _get_client
 from core.api.wing_client import CoupangWingClient, CoupangWingError
-from core.database import CoupangDB  # 호환 래퍼 (SessionLocal 기반)
+from core.constants import STATUS_MAP
+from core.database import CoupangDB
 from core.config import AnalysisConfig
-
-
-# ─── 계정 설정 (product_api.py와 동일) ──────────────────
-
-ACCOUNTS: dict[str, dict] = {
-    "007-ez": {
-        "vendor_id": os.getenv("COUPANG_007EZ_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_007EZ_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_007EZ_SECRET_KEY", ""),
-    },
-    "002-bm": {
-        "vendor_id": os.getenv("COUPANG_002BM_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_002BM_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_002BM_SECRET_KEY", ""),
-    },
-    "007-bm": {
-        "vendor_id": os.getenv("COUPANG_007BM_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_007BM_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_007BM_SECRET_KEY", ""),
-    },
-    "007-book": {
-        "vendor_id": os.getenv("COUPANG_007BOOK_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_007BOOK_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_007BOOK_SECRET_KEY", ""),
-    },
-    "big6ceo": {
-        "vendor_id": os.getenv("COUPANG_BIG6CEO_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_BIG6CEO_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_BIG6CEO_SECRET_KEY", ""),
-    },
-}
-
-STATUS_MAP = {
-    "APPROVED": "승인완료(판매중)",
-    "DRAFT": "임시저장",
-    "PENDING": "승인대기",
-    "DELETED": "삭제됨",
-    "REJECTED": "반려됨",
-    "UNKNOWN": "알 수 없음",
-}
 
 # ─── Safety Locks ────────────────────────────────────────
 
@@ -84,20 +45,6 @@ FULL_FIELDS = {
     "sellerProductName", "searchTags", "brand", "manufacturer",
     "attributes", "images", "contents",
 }
-
-
-def _get_client(account: str) -> CoupangWingClient:
-    """계정명으로 API 클라이언트 생성"""
-    cfg = ACCOUNTS.get(account)
-    if not cfg:
-        raise ValueError(f"알 수 없는 계정: {account} (등록된 계정: {', '.join(ACCOUNTS.keys())})")
-    if not cfg["access_key"]:
-        raise ValueError(f"{account}: API 키 미설정 (.env 확인)")
-    return CoupangWingClient(
-        access_key=cfg["access_key"],
-        secret_key=cfg["secret_key"],
-        vendor_id=cfg["vendor_id"],
-    )
 
 
 def _check_lock(lock_name: str):

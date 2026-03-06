@@ -9,65 +9,19 @@ Excel → API 등록, 검색어 태그 업데이트, 상태 조회, 삭제, 갭 
 - approve 엔드포인트: 404 (공개 API에 없음)
 """
 
-import os
 import sys
 import time
 
 from dotenv import load_dotenv
 
-load_dotenv(r"C:\Users\MSI\Desktop\Coupong\.env")
+load_dotenv()
 
-from core.api.wing_client import CoupangWingClient
-from core.constants import calc_original_price, ORIGINAL_PRICE_RATIO
+from core.accounts import ACCOUNTS, get_wing_client as _get_client
+from core.constants import calc_original_price, ORIGINAL_PRICE_RATIO, STATUS_MAP
 from operations.upload_excel import (
     read_products, clean_search_tag, generate_search_tags,
     compare_accounts, find_upload_files,
 )
-
-
-# ─── 계정 설정 ─────────────────────────────────────────
-
-ACCOUNTS: dict[str, dict] = {
-    "007-ez": {
-        "vendor_id": os.getenv("COUPANG_007EZ_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_007EZ_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_007EZ_SECRET_KEY", ""),
-    },
-    "002-bm": {
-        "vendor_id": os.getenv("COUPANG_002BM_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_002BM_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_002BM_SECRET_KEY", ""),
-    },
-    "007-bm": {
-        "vendor_id": os.getenv("COUPANG_007BM_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_007BM_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_007BM_SECRET_KEY", ""),
-    },
-    "007-book": {
-        "vendor_id": os.getenv("COUPANG_007BOOK_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_007BOOK_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_007BOOK_SECRET_KEY", ""),
-    },
-    "big6ceo": {
-        "vendor_id": os.getenv("COUPANG_BIG6CEO_VENDOR_ID", ""),
-        "access_key": os.getenv("COUPANG_BIG6CEO_ACCESS_KEY", ""),
-        "secret_key": os.getenv("COUPANG_BIG6CEO_SECRET_KEY", ""),
-    },
-}
-
-
-def _get_client(account: str) -> CoupangWingClient:
-    """계정명으로 API 클라이언트 생성"""
-    cfg = ACCOUNTS.get(account)
-    if not cfg:
-        raise ValueError(f"알 수 없는 계정: {account} (등록된 계정: {', '.join(ACCOUNTS.keys())})")
-    if not cfg["access_key"]:
-        raise ValueError(f"{account}: API 키 미설정 (.env 확인)")
-    return CoupangWingClient(
-        access_key=cfg["access_key"],
-        secret_key=cfg["secret_key"],
-        vendor_id=cfg["vendor_id"],
-    )
 
 
 # ─── 태그 병합 ─────────────────────────────────────────
@@ -290,15 +244,6 @@ def delete_products(account: str, seller_product_ids: list[str],
 
 
 # ─── 상태 조회 ─────────────────────────────────────────
-
-STATUS_MAP = {
-    "APPROVED": "승인완료(판매중)",
-    "DRAFT": "임시저장",
-    "PENDING": "승인대기",
-    "DELETED": "삭제됨",
-    "REJECTED": "반려됨",
-    "UNKNOWN": "알 수 없음",
-}
 
 
 def check_status(account: str,

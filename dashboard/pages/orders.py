@@ -34,151 +34,14 @@ from dashboard.utils import (
     render_grid,
     run_sql,
 )
+from dashboard.services.order_service import (
+    load_hanjin_creds as _load_hanjin_creds,
+    save_hanjin_creds as _save_hanjin_creds,
+    parse_dt as _parse_dt,
+    extract_price as _extract_price,
+    save_ordersheets_to_db as _save_ordersheets_to_db,
+)
 logger = logging.getLogger(__name__)
-
-_IS_LOCAL = sys.platform == "win32"
-_HANJIN_CREDS_PATH = Path(__file__).resolve().parents[2] / "hanjin_creds.json"
-
-
-def _load_hanjin_creds() -> dict:
-    if _IS_LOCAL and _HANJIN_CREDS_PATH.exists():
-        try:
-            return json.loads(_HANJIN_CREDS_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def _save_hanjin_creds(user_id: str, password: str):
-    data = {"user_id": user_id, "password": password}
-    _HANJIN_CREDS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-# ── 주문 DB 저장용 UPSERT SQL ──
-_UPSERT_ORDER_SQL = """
-    INSERT INTO orders
-        (account_id, shipment_box_id, order_id, vendor_item_id,
-         status, ordered_at, paid_at,
-         orderer_name, receiver_name, receiver_addr, receiver_post_code,
-         product_id, seller_product_id, seller_product_name, vendor_item_name,
-         shipping_count, cancel_count, hold_count_for_cancel,
-         sales_price, order_price, discount_price, shipping_price,
-         delivery_company_name, invoice_number, shipment_type,
-         delivered_date, confirm_date,
-         refer, canceled, listing_id, raw_json, updated_at)
-    VALUES
-        (:account_id, :shipment_box_id, :order_id, :vendor_item_id,
-         :status, :ordered_at, :paid_at,
-         :orderer_name, :receiver_name, :receiver_addr, :receiver_post_code,
-         :product_id, :seller_product_id, :seller_product_name, :vendor_item_name,
-         :shipping_count, :cancel_count, :hold_count_for_cancel,
-         :sales_price, :order_price, :discount_price, :shipping_price,
-         :delivery_company_name, :invoice_number, :shipment_type,
-         :delivered_date, :confirm_date,
-         :refer, :canceled, :listing_id, :raw_json, :updated_at)
-    ON CONFLICT (account_id, shipment_box_id, vendor_item_id) DO UPDATE SET
-        status=EXCLUDED.status, ordered_at=EXCLUDED.ordered_at, paid_at=EXCLUDED.paid_at,
-        orderer_name=EXCLUDED.orderer_name, receiver_name=EXCLUDED.receiver_name,
-        receiver_addr=EXCLUDED.receiver_addr, receiver_post_code=EXCLUDED.receiver_post_code,
-        product_id=EXCLUDED.product_id, seller_product_id=EXCLUDED.seller_product_id,
-        seller_product_name=EXCLUDED.seller_product_name, vendor_item_name=EXCLUDED.vendor_item_name,
-        shipping_count=EXCLUDED.shipping_count, cancel_count=EXCLUDED.cancel_count,
-        hold_count_for_cancel=EXCLUDED.hold_count_for_cancel,
-        sales_price=EXCLUDED.sales_price, order_price=EXCLUDED.order_price,
-        discount_price=EXCLUDED.discount_price, shipping_price=EXCLUDED.shipping_price,
-        delivery_company_name=EXCLUDED.delivery_company_name, invoice_number=EXCLUDED.invoice_number,
-        shipment_type=EXCLUDED.shipment_type, delivered_date=EXCLUDED.delivered_date,
-        confirm_date=EXCLUDED.confirm_date, refer=EXCLUDED.refer, canceled=EXCLUDED.canceled,
-        listing_id=EXCLUDED.listing_id, raw_json=EXCLUDED.raw_json, updated_at=EXCLUDED.updated_at
-"""
-
-
-def _parse_dt(val):
-    """날짜/시간 문자열 파싱"""
-    if not val:
-        return None
-    return str(val)[:19]
-
-
-def _extract_price(val):
-    """v4 plain int / v5 {units, nanos} 파싱"""
-    if val is None:
-        return 0
-    if isinstance(val, dict):
-        return int(val.get("units", 0) or 0)
-    return int(val or 0)
-
-
-def _save_ordersheets_to_db(acct, ordersheets, status):
-    """WING API 응답 → orders 테이블 UPSERT (백그라운드 스레드, match_listing 생략)"""
-    if not ordersheets:
-        return
-
-    def _do_save():
-        account_id = int(acct["id"])
-        try:
-            with engine.connect() as conn:
-                for os_data in ordersheets:
-                    shipment_box_id = os_data.get("shipmentBoxId")
-                    order_id = os_data.get("orderId")
-                    if not shipment_box_id or not order_id:
-                        continue
-                    order_items = os_data.get("orderItems", [])
-                    if not order_items:
-                        order_items = [os_data]
-                    orderer = os_data.get("orderer") or {}
-                    receiver = os_data.get("receiver") or {}
-                    addr1 = receiver.get("addr1", "") or ""
-                    addr2 = receiver.get("addr2", "") or ""
-                    receiver_addr = f"{addr1} {addr2}".strip()
-                    for item in order_items:
-                        v_item_id = item.get("vendorItemId") or os_data.get("vendorItemId")
-                        sp_id = item.get("sellerProductId") or os_data.get("sellerProductId")
-                        sp_name = item.get("sellerProductName") or os_data.get("sellerProductName", "")
-                        params = {
-                            "account_id": account_id,
-                            "shipment_box_id": int(shipment_box_id),
-                            "order_id": int(order_id),
-                            "vendor_item_id": int(v_item_id) if v_item_id else 0,
-                            "status": status,
-                            "ordered_at": _parse_dt(os_data.get("orderedAt")),
-                            "paid_at": _parse_dt(os_data.get("paidAt")),
-                            "orderer_name": orderer.get("name", ""),
-                            "receiver_name": receiver.get("name", ""),
-                            "receiver_addr": receiver_addr,
-                            "receiver_post_code": receiver.get("postCode", ""),
-                            "product_id": int(item.get("productId") or 0) or None,
-                            "seller_product_id": int(sp_id) if sp_id else None,
-                            "seller_product_name": sp_name,
-                            "vendor_item_name": item.get("vendorItemName") or "",
-                            "shipping_count": int(item.get("shippingCount", 0) or 0),
-                            "cancel_count": int(item.get("cancelCount", 0) or 0),
-                            "hold_count_for_cancel": int(item.get("holdCountForCancel", 0) or 0),
-                            "sales_price": _extract_price(item.get("salesPrice")),
-                            "order_price": _extract_price(item.get("orderPrice")),
-                            "discount_price": _extract_price(item.get("discountPrice")),
-                            "shipping_price": _extract_price(os_data.get("shippingPrice")),
-                            "delivery_company_name": os_data.get("deliveryCompanyName", ""),
-                            "invoice_number": os_data.get("invoiceNumber", ""),
-                            "shipment_type": os_data.get("shipmentType", ""),
-                            "delivered_date": _parse_dt(os_data.get("deliveredDate")),
-                            "confirm_date": _parse_dt(item.get("confirmDate")),
-                            "refer": os_data.get("refer", ""),
-                            "canceled": bool(item.get("canceled", False)),
-                            "listing_id": None,
-                            "raw_json": json.dumps(os_data, ensure_ascii=False, default=str)[:5000],
-                            "updated_at": datetime.now().isoformat(),
-                        }
-                        try:
-                            conn.execute(sa_text(_UPSERT_ORDER_SQL), params)
-                        except Exception:
-                            pass
-                conn.commit()
-        except Exception as e:
-            logger.warning(f"주문 DB 저장 오류: {e}")
-
-    import threading
-    threading.Thread(target=_do_save, daemon=True).start()
 
 
 def render(selected_account, accounts_df, account_names):
@@ -1028,52 +891,42 @@ def render(selected_account, accounts_df, account_names):
                 from operations.hanjin_nfocus import HanjinNFocusClient, HanjinNFocusError
 
                 _hc = _load_hanjin_creds()
-                client = HanjinNFocusClient(
-                    user_id=_hc["user_id"],
-                    password=_hc["password"],
-                    headless=False,
-                )
-                try:
-                    with st.status("N-Focus 처리 중...", expanded=True) as status:
-                        def _on_progress(msg: str):
-                            st.write(msg)
-
+                with st.status("N-Focus 처리 중...", expanded=True) as status:
+                    with HanjinNFocusClient(
+                        user_id=_hc["user_id"],
+                        password=_hc["password"],
+                        headless=False,
+                    ) as client:
                         _nf_result = client.process_full_workflow(
                             excel_bytes=_nfocus_file.getvalue(),
                             filename=_nfocus_file.name,
-                            progress_callback=_on_progress,
+                            progress_callback=lambda msg: st.write(msg),
                         )
 
-                        if _nf_result["success"]:
-                            status.update(label="N-Focus 처리 완료!", state="complete")
-                            st.success(
-                                f"정상 등록: {_nf_result['registered']}건"
-                                + (f" / 오류: {_nf_result['error']}건" if _nf_result["error"] else "")
+                    if _nf_result["success"]:
+                        status.update(label="N-Focus 처리 완료!", state="complete")
+                        st.success(
+                            f"정상 출력: {_nf_result['registered']}건"
+                            + (f" / 오류: {_nf_result['error']}건" if _nf_result["error"] else "")
+                        )
+                        if _nf_result["error_details"]:
+                            with st.expander("오류 상세"):
+                                for _err in _nf_result["error_details"]:
+                                    st.warning(_err)
+                        if _nf_result["invoice_excel"]:
+                            st.download_button(
+                                "운송장 엑셀 다운로드 → STEP 4에서 업로드",
+                                _nf_result["invoice_excel"],
+                                file_name=f"Invoice_{date.today().isoformat()}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="tab3_dl_nfocus_invoice",
                             )
-                            if _nf_result["error_details"]:
-                                with st.expander("오류 상세"):
-                                    for _err in _nf_result["error_details"]:
-                                        st.warning(_err)
-
-                            if _nf_result["invoice_excel"]:
-                                st.session_state["hanjin_invoice_bytes"] = _nf_result["invoice_excel"]
-                                st.download_button(
-                                    "운송장 엑셀 다운로드",
-                                    _nf_result["invoice_excel"],
-                                    file_name=f"Invoice_{date.today().isoformat()}.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    key="tab3_dl_nfocus_invoice",
-                                )
-                        else:
-                            status.update(label="N-Focus 처리 실패", state="error")
-                except HanjinNFocusError as e:
-                    st.error(f"N-Focus 오류: {e}")
-                finally:
-                    client.close()
+                    else:
+                        status.update(label="N-Focus 처리 실패", state="error")
             except ImportError:
-                st.error("playwright가 설치되지 않았습니다. `pip install playwright && playwright install chromium`")
+                st.error("playwright 미설치. `pip install playwright && playwright install chromium`")
             except Exception as e:
-                st.error(f"오류 발생: {e}")
+                st.error(f"N-Focus 오류: {e}")
             finally:
                 st.session_state["nfocus_running"] = False
 

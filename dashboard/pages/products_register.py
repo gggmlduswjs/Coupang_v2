@@ -118,24 +118,7 @@ def render_tab_register(account_id, selected_account, accounts_df, _wing_client)
           with cr_col2:
               btn_crawl = st.button("크롤링 시작", type="primary", key="btn_crawl", use_container_width=True)
           if btn_crawl:
-              from scripts.franchise_sync import FranchiseSync
-              sync = FranchiseSync()
-              try:
-                  crawl_progress = st.progress(0, text="출판사별 알라딘 검색 중...")
-                  crawl_result = sync.crawl_by_publisher(
-                      max_per_publisher=crawl_max,
-                      progress_callback=lambda cur, tot, msg: crawl_progress.progress(cur / tot if tot > 0 else 0, text=msg),
-                  )
-                  crawl_progress.progress(0.9, text="마진 분석 중...")
-                  analyze_result = sync.analyze_products(crawl_result["books"])
-                  crawl_progress.progress(1.0, text="완료!")
-                  st.success(f"검색 {crawl_result['searched']}개 -> 신규 {crawl_result['new']}개, Product {analyze_result['created']}개")
-                  query_df.clear()
-                  st.rerun()
-              except Exception as e:
-                  st.error(f"크롤링 오류: {e}")
-              finally:
-                  sync.close()
+              st.warning("알라딘 크롤링 기능 준비 중")
 
       st.divider()
 

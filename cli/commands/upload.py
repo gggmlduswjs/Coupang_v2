@@ -379,7 +379,8 @@ def cmd_upload(args, config):
             print(f"\n  {result['warning']}")
 
     elif action == "status":
-        from operations.product_api import check_status, STATUS_MAP
+        from operations.product_api import check_status
+        from core.constants import STATUS_MAP
 
         account = getattr(args, "account", "")
         if not account:

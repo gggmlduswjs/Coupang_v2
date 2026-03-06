@@ -163,29 +163,4 @@ def render_tab_inventory(account_id, selected_account, accounts_df, _wing_client
         _btn_inv_sync = st.button("가격/재고 동기화 실행", type="primary", key="btn_inv_sync", use_container_width=True)
 
         if _btn_inv_sync:
-            try:
-                from scripts.sync_inventory import InventorySync
-                syncer = InventorySync()
-                _inv_acct_arg = None if _inv_acct == "전체" else _inv_acct
-                _inv_progress = st.progress(0, text="가격/재고 동기화 중...")
-                _inv_results = syncer.sync_all(
-                    account_name=_inv_acct_arg,
-                    dry_run=_inv_dry,
-                    progress_callback=lambda cur, tot, msg: _inv_progress.progress(
-                        min(cur / max(tot, 1), 1.0), text=msg),
-                )
-                _inv_progress.progress(1.0, text="완료!")
-                _inv_total_price = sum(r["price_updated"] for r in _inv_results)
-                _inv_total_stock = sum(r["stock_refilled"] for r in _inv_results)
-                _inv_total_vid = sum(r["vendor_id_backfilled"] for r in _inv_results)
-                _inv_total_err = sum(r["errors"] for r in _inv_results)
-                _mode = "[DRY-RUN] " if _inv_dry else ""
-                st.success(
-                    f"{_mode}동기화 완료: {len(_inv_results)}개 계정 | "
-                    f"가격변경 {_inv_total_price}건, 재고리필 {_inv_total_stock}건, "
-                    f"VID백필 {_inv_total_vid}건, 오류 {_inv_total_err}건"
-                )
-                query_df.clear()
-            except Exception as e:
-                st.error(f"동기화 오류: {e}")
-                logger.exception("가격/재고 동기화 오류")
+            st.warning("가격/재고 동기화 기능 준비 중")

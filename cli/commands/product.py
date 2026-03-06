@@ -10,8 +10,8 @@ def cmd_product(args, config):
         update_product_name, update_product_tags, update_product_price,
         update_product_field, register_product, delete_product,
         stop_sale, resume_sale, get_change_history,
-        STATUS_MAP,
     )
+    from core.constants import STATUS_MAP
 
     action = args.product_action
     if not action:
