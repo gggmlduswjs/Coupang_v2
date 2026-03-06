@@ -285,9 +285,8 @@ def render(selected_account, accounts_df, account_names):
     with c_title:
         st.subheader("계정별 현황")
     with c_btn:
-        if _IS_LOCAL:
-            if st.button("주문 새로고침", type="primary", key="_sync_orders"):
-                _run_order_sync()
+        if st.button("주문 새로고침", type="primary", key="_sync_orders"):
+            _run_order_sync()
 
     # 마지막 동기화 시각 표시
     _show_last_sync_time()
