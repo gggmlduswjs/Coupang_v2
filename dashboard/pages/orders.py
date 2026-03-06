@@ -6,6 +6,7 @@
 import io
 import json
 import logging
+import os
 import re
 import sys
 from datetime import date, datetime, timedelta
@@ -281,10 +282,10 @@ def render(selected_account, accounts_df, account_names):
         st.cache_data.clear()
 
     # ── 상단 컨트롤 ──
-    _is_local = sys.platform == "win32"
+    _can_call_api = sys.platform == "win32" or os.environ.get("RAILWAY_ENVIRONMENT")
     _top_c1, _top_c2 = st.columns([2, 5])
     with _top_c1:
-        if _is_local:
+        if _can_call_api:
             if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
                          help="WING API에서 최근 7일 주문 즉시 조회", type="primary"):
                 try:
@@ -568,7 +569,7 @@ def render(selected_account, accounts_df, account_names):
             with _po_col1:
                 st.caption("INSTRUCT(상품준비중) 주문 기반 · 배송 처리하면 자동으로 사라짐")
             with _po_col2:
-                if _is_local:
+                if _can_call_api:
                     if st.button("🔄 주문 새로고침", key="btn_po_sync", use_container_width=True, type="primary"):
                         with st.spinner("INSTRUCT 주문 동기화 중..."):
                             _synced = _sync_live_orders()

@@ -3,6 +3,7 @@ Wing 셀러센터 바로가기
 ======================
 wing:// 커스텀 프로토콜로 Chrome 자동 열기 + 계정별 실시간 현황
 """
+import os
 import sys
 import json
 import subprocess
@@ -12,6 +13,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 _IS_LOCAL = sys.platform == "win32"
+_CAN_CALL_API = _IS_LOCAL or os.environ.get("RAILWAY_ENVIRONMENT")
 _WING_CREDS_PATH = Path(__file__).resolve().parents[2] / "wing_creds.json"
 
 
@@ -285,7 +287,7 @@ def render(selected_account, accounts_df, account_names):
     with c_title:
         st.subheader("계정별 현황")
     with c_btn:
-        if _IS_LOCAL:
+        if _CAN_CALL_API:
             if st.button("주문 새로고침", type="primary", key="_sync_orders"):
                 _run_order_sync()
 
