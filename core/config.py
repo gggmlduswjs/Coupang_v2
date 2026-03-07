@@ -10,105 +10,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
-    """환경변수 기반 설정 (Pydantic)"""
+    """환경변수 기반 설정 (Pydantic)
 
-    # Database
+    DB 연결만 사용. WING API/알라딘 등은 core/accounts.py, os.getenv, Streamlit secrets 참조.
+    """
+
     database_url: str = f"sqlite:///{BASE_DIR / 'data' / 'coupang.db'}"
     supabase_database_url: Optional[str] = None
-    supabase_url: Optional[str] = None
-    supabase_service_key: Optional[str] = None
-    supabase_anon_key: Optional[str] = None
-
-    # Redis
-    redis_url: str = "redis://localhost:6379/0"
-
-    # Security
-    encryption_key: str = ""
-
-    # Crawler (알라딘)
-    crawl_delay_min: float = 1.0
-    crawl_delay_max: float = 3.0
-    crawl_max_items_per_session: int = 100
-    crawl_timeout: int = 30
-
-    # Playwright (쿠팡 검색 수집)
-    headless: bool = False
-    max_pages: int = 3
-    chrome_debug_port: int = 9222
-    collect_delay_min: float = 3.0
-    collect_delay_max: float = 7.0
-
-    # Upload
-    upload_delay_min: float = 5.0
-    upload_delay_max: float = 10.0
-    upload_max_daily_per_account: int = 20
-    upload_enable_playwright: bool = False
-
-    # Analysis (쿠팡데이터분석 파라미터)
-    analysis_period_days: int = 7
-    analysis_exposure_low_threshold: int = 10
-    analysis_conversion_low_threshold: int = 50
-    top_n: int = 10
-    enrich_top_n: int = 5
-    price_bins: int = 10
-    review_rate: float = 0.03
-
-    # Catalog matching weights
-    catalog_name_weight: float = 60.0
-    catalog_price_weight: float = 25.0
-    catalog_category_weight: float = 10.0
-    catalog_review_weight: float = 5.0
-
-    # Notification
-    enable_kakao_notification: bool = False
-    kakao_api_key: Optional[str] = None
-    enable_email_notification: bool = False
-    email_smtp_server: Optional[str] = None
-    email_smtp_port: Optional[int] = None
-    email_smtp_user: Optional[str] = None
-    email_smtp_password: Optional[str] = None
-    email_from: Optional[str] = None
-    email_to: Optional[str] = None
-
-    # Logging
-    log_level: str = "INFO"
-    log_file_max_bytes: int = 10485760
-    log_backup_count: int = 5
-
-    # Obsidian
-    obsidian_vault_path: Optional[str] = None
-
-    # Aladin API
-    aladin_ttb_key: Optional[str] = None
-
-    # Coupang Accounts (로그인)
-    coupang_id_1: Optional[str] = None
-    coupang_pw_1: Optional[str] = None
-    coupang_id_2: Optional[str] = None
-    coupang_pw_2: Optional[str] = None
-    coupang_id_3: Optional[str] = None
-    coupang_pw_3: Optional[str] = None
-    coupang_id_4: Optional[str] = None
-    coupang_pw_4: Optional[str] = None
-    coupang_id_5: Optional[str] = None
-    coupang_pw_5: Optional[str] = None
-
-    # Coupang WING API (5개 계정)
-    coupang_007book_vendor_id: Optional[str] = None
-    coupang_007book_access_key: Optional[str] = None
-    coupang_007book_secret_key: Optional[str] = None
-    coupang_007bm_vendor_id: Optional[str] = None
-    coupang_007bm_access_key: Optional[str] = None
-    coupang_007bm_secret_key: Optional[str] = None
-    coupang_007ez_vendor_id: Optional[str] = None
-    coupang_007ez_access_key: Optional[str] = None
-    coupang_007ez_secret_key: Optional[str] = None
-    coupang_002bm_vendor_id: Optional[str] = None
-    coupang_002bm_access_key: Optional[str] = None
-    coupang_002bm_secret_key: Optional[str] = None
-    coupang_big6ceo_vendor_id: Optional[str] = None
-    coupang_big6ceo_access_key: Optional[str] = None
-    coupang_big6ceo_secret_key: Optional[str] = None
 
     class Config:
         env_file = ".env"
@@ -128,8 +36,6 @@ class AnalysisConfig:
     html_cache_dir: str = str(BASE_DIR / "data" / "html_cache")
     reports_dir: str = str(BASE_DIR / "reports")
     backup_dir: str = str(BASE_DIR / "data" / "backups")
-    upload_excel_dir: str = str(BASE_DIR / "엑셀")
-
     delay_min: float = 3.0
     delay_max: float = 7.0
     headless: bool = False

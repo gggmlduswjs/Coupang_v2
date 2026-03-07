@@ -265,6 +265,46 @@ class OrderSync:
             except SQLAlchemyError as e:
                 logger.error(f"  [{account_name}] DB 배치 오류: {e}")
 
+        # 4) 활성 상태 정리: API에서 조회된 활성 주문 외의 DB 활성 주문 → FINAL_DELIVERY
+        #    날짜 범위가 충분히 넓을 때만 (60일+) 정리 수행 — quick sync에서 오작동 방지
+        active_statuses = {"ACCEPT", "INSTRUCT", "DEPARTURE", "DELIVERING"}
+        date_span = (date.fromisoformat(str(date_to)) - date.fromisoformat(str(date_from))).days if isinstance(date_from, str) else (date_to - date_from).days
+        if date_span >= 60 and (statuses is None or active_statuses.issubset(set(statuses or []))):
+            # API에서 가져온 활성 주문의 (shipment_box_id, vendor_item_id) 집합
+            api_active_keys = set()
+            for status, ordersheets in all_results:
+                if status not in active_statuses:
+                    continue
+                for os_data in ordersheets:
+                    sb_id = os_data.get("shipmentBoxId")
+                    if not sb_id:
+                        continue
+                    for item in self._extract_order_items(os_data):
+                        v_id = item.get("vendorItemId") or os_data.get("vendorItemId") or 0
+                        api_active_keys.add((int(sb_id), int(v_id)))
+
+            if api_active_keys or total_fetched > 0:
+                try:
+                    with self.engine.connect() as conn:
+                        # DB에서 현재 활성 상태인 주문 조회
+                        db_active = conn.execute(text(
+                            "SELECT shipment_box_id, vendor_item_id FROM orders "
+                            "WHERE account_id = :aid AND status IN ('ACCEPT','INSTRUCT','DEPARTURE','DELIVERING')"
+                        ), {"aid": account_id}).fetchall()
+
+                        stale_keys = [(r[0], r[1]) for r in db_active if (r[0], r[1]) not in api_active_keys]
+                        if stale_keys:
+                            for sb_id, v_id in stale_keys:
+                                conn.execute(text(
+                                    "UPDATE orders SET status = 'FINAL_DELIVERY', updated_at = :now "
+                                    "WHERE account_id = :aid AND shipment_box_id = :sb AND vendor_item_id = :vi "
+                                    "AND status IN ('ACCEPT','INSTRUCT','DEPARTURE','DELIVERING')"
+                                ), {"aid": account_id, "sb": sb_id, "vi": v_id, "now": datetime.now().isoformat()})
+                            conn.commit()
+                            logger.info(f"  [{account_name}] 상태 정리: {len(stale_keys)}건 → FINAL_DELIVERY")
+                except Exception as e:
+                    logger.warning(f"  [{account_name}] 상태 정리 실패: {e}")
+
         result = {
             "account": account_name,
             "fetched": total_fetched,
@@ -348,7 +388,7 @@ def main():
     args = parser.parse_args()
 
     if args.quick:
-        statuses = ["ACCEPT", "INSTRUCT"]
+        statuses = None  # 전체 상태 조회 (1일치라 양 적음)
     elif args.status:
         statuses = [args.status]
     else:

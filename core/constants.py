@@ -52,71 +52,105 @@ COUPANG_FEE_RATE = 0.11  # 판매가의 11%
 # ─────────────────────────────────────────────
 # 배송비
 # ─────────────────────────────────────────────
+# 기본 배송비
 DEFAULT_SHIPPING_COST = 2000
+# 반품비
 DEFAULT_RETURN_CHARGE = 2500
+# 무료배송 기준         
 FREE_SHIPPING_THRESHOLD = 2000
+# 목표 마진 최소값
 TARGET_MARGIN_MIN = 1300
+# 목표 마진 최대값
 TARGET_MARGIN_MAX = 2000
+# 조건부 무료배송 기준
 CONDITIONAL_FREE_THRESHOLD = 20000
+# 조건부 무료배송 기준 (67%)
 CONDITIONAL_FREE_THRESHOLD_67 = 25000
+# 조건부 무료배송 기준 (70%)
 CONDITIONAL_FREE_THRESHOLD_70 = 30000
+# 조건부 무료배송 기준 (73%)
 CONDITIONAL_FREE_THRESHOLD_73 = 60000
 
 # ─────────────────────────────────────────────
 # 재고
 # ─────────────────────────────────────────────
+# 기본 재고
+# 기본 리드타임
+# 저장재고 임계값
 DEFAULT_STOCK = 1000
+# 기본 리드타임
 DEFAULT_LEAD_TIME = 2
+# 저장재고 임계값
 LOW_STOCK_THRESHOLD = 3
-
-# ─────────────────────────────────────────────
-# 안전장치 (스크립트 일괄 실행 차단)
-# ─────────────────────────────────────────────
-PRICE_LOCK = True
-DELETE_LOCK = True
-SALE_STOP_LOCK = True
-REGISTER_LOCK = True
 
 # ─────────────────────────────────────────────
 # API
 # ─────────────────────────────────────────────
-API_THROTTLE_SECONDS = 1.0
+# API 쓰로틀 시간
+API_THROTTLE_SECONDS = 1.0  
+# 쿠팡 WING API 요청 제한
 COUPANG_WING_RATE_LIMIT = 0.1
 
 # ─────────────────────────────────────────────
 # 쿠팡 WING API - 도서 상품 등록 기본값
 # ─────────────────────────────────────────────
 BOOK_PRODUCT_DEFAULTS = {
+    # 배송방법
     "deliveryMethod": "SEQUENCIAL",
+    # 배송비 유형
     "deliveryChargeType": "CONDITIONAL_FREE",
+    # 배송비
     "deliveryCharge": DEFAULT_SHIPPING_COST,
+    # 조건부 무료배송 기준
     "freeShipOverAmount": CONDITIONAL_FREE_THRESHOLD,
+    # 반품비
     "deliveryChargeOnReturn": DEFAULT_RETURN_CHARGE,
+    # 배송방법
     "unionDeliveryType": "UNION_DELIVERY",
+    # 원격지 배송 가능 여부
     "remoteAreaDeliverable": "N",
+    # 반품비
     "returnCharge": DEFAULT_RETURN_CHARGE,
+    # 요청 여부
     "requested": True,
+    # 성인 전용 여부
     "adultOnly": "EVERYONE",
+    # 세율 유형
     "taxType": "FREE",
+    # 병렬 수입 여부
     "parallelImported": "NOT_PARALLEL_IMPORTED",
+    # 해외 구매 여부
     "overseasPurchased": "NOT_OVERSEAS_PURCHASED",
+    # PCC 필요 여부
     "pccNeeded": False,
+    # 제품 상태
     "offerCondition": "NEW",
+    # 출고 배송 시간
     "outboundShippingTimeDay": 1,
+    # 최대 구매 인원
     "maximumBuyForPerson": 0,
 }
 
+# ─────────────────────────────────────────────
 # 도서 카테고리 코드
+# ─────────────────────────────────────────────
 BOOK_CATEGORY_CODE = "76236"
 BOOK_CATEGORY_MAP = {
+    # 도서 카테고리 코드
     "76236": "고등교재",
+    # 도서 카테고리 코드
     "76239": "기타교재",
+    # 도서 카테고리 코드
     "76243": "수험서",
+    # 도서 카테고리 코드
     "35171": "고등교재",
+    # 도서 카테고리 코드
     "76001": "국내도서",
 }
 
+# ─────────────────────────────────────────────
 # WING API 계정별 환경변수 매핑
+# ─────────────────────────────────────────────
 WING_ACCOUNT_ENV_MAP = {
     "007-book": "COUPANG_007BOOK",
     "007-bm":   "COUPANG_007BM",
@@ -125,7 +159,9 @@ WING_ACCOUNT_ENV_MAP = {
     "big6ceo":  "COUPANG_BIG6CEO",
 }
 
+# ─────────────────────────────────────────────
 # WING 로그인 계정 환경변수 매핑
+# ─────────────────────────────────────────────
 WING_LOGIN_ENV_MAP = {
     "007-book": 1,
     "007-ez": 2,
@@ -144,28 +180,60 @@ SYNC_CONFIG = {
     "stale_hours": 24,
 }
 
+# ─────────────────────────────────────────────
+# 타임아웃 설정
+# ─────────────────────────────────────────────
 TIMEOUT_CONFIG = {
     "api_request": 30,
     "db_connect": 30,
 }
 
+# ─────────────────────────────────────────────
+# 자동 크롤링 설정
+# ─────────────────────────────────────────────
 AUTO_CRAWL_CONFIG = {
+    # 크롤링 시간       
     "crawl_hour": 3,
+    # 최대 크롤링 거래처별 상품 수
     "max_per_publisher": 50,
+    # 년도 필터
     "year_filter": 2025,
+    # 확인 간격
     "check_interval": 30,
+    # 최대 안전 상품 수 
+    "max_items_safety": 200,
+    # 최대 크롤링 거래처별 상품 수
+    "max_per_publisher": 50,
+    # 년도 필터
+    "year_filter": 2025,
+    # 확인 간격
+    "check_interval": 30,
+    # 최대 안전 상품 수
     "max_items_safety": 200,
 }
 
+# ─────────────────────────────────────────────
+# 크롤링 최소 가격
+# ─────────────────────────────────────────────
 CRAWL_MIN_PRICE = 5000
+# ─────────────────────────────────────────────
+# 크롤링 제외 키워드
+# ─────────────────────────────────────────────
 CRAWL_EXCLUDE_KEYWORDS = [
     "사전", "잡지", "월간지", "자습서", "평가문제집",
 ]
 
+# ─────────────────────────────────────────────
+# 가격 설정
+# ─────────────────────────────────────────────
 PRICE_CONFIG = {
+    # 목표 마진 최소값              
     "min_margin": 1300,
+    # 목표 마진 최대값
     "target_margin": 2000,
+    # 최소 마진율
     "min_margin_rate": 0.05,
+    # 묶음 임계값
     "bundle_threshold": 2000,
 }
 
@@ -227,6 +295,9 @@ DISTRIBUTOR_MAP = {
     "대원": ["폴리북스", "팩토", "매스티안", "소마"],
 }
 
+# ─────────────────────────────────────────────
+# 시리즈 매핑
+# ─────────────────────────────────────────────
 SERIES_TO_PUBLISHER = {
     "완자": "비상교육", "오투": "비상교육", "한끝": "비상교육",
     "개념+유형": "비상교육", "개념 + 유형": "비상교육",

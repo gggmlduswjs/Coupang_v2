@@ -11,7 +11,6 @@ import re
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from streamlit_autorefresh import st_autorefresh
 
 import pandas as pd
 import streamlit as st
@@ -47,15 +46,11 @@ logger = logging.getLogger(__name__)
 def render(selected_account, accounts_df, account_names):
     st.title("주문 관리")
 
-    # ── 10분 자동 화면 새로고침 (DB 변경사항 반영) ──
-    # 실제 동기화는 Windows 작업 스케줄러(CoupangBiz_sync_orders)가 2시간마다 수행
-    _refresh_count = st_autorefresh(interval=600_000, key="order_autorefresh", debounce=False)
-
     # ── DB 기반 주문 조회 (단일 쿼리, 즉시 로드) ──
 
     @st.cache_data(ttl=30)
     def _load_all_orders_from_db():
-        """DB에서 최근 30일 전체 주문 1회 조회 — 이후 Python에서 필터"""
+        """DB에서 활성 주문(전체) + 배송완료(30일) 조회"""
         _from = (date.today() - timedelta(days=30)).isoformat()
         return query_df("""
             SELECT a.account_name AS "계정",
@@ -96,8 +91,49 @@ def render(selected_account, accounts_df, account_names):
                    '' AS "통관용전화번호"
             FROM orders o
             JOIN accounts a ON o.account_id = a.id
-            WHERE o.ordered_at >= :date_from
-            ORDER BY o.ordered_at DESC
+            WHERE o.status IN ('ACCEPT','INSTRUCT','DEPARTURE','DELIVERING','NONE_TRACKING')
+            UNION ALL
+            SELECT a.account_name AS "계정",
+                   o.shipment_box_id AS "묶음배송번호",
+                   o.order_id AS "주문번호",
+                   o.seller_product_name AS "상품명",
+                   o.vendor_item_name AS "옵션명",
+                   o.shipping_count AS "수량",
+                   o.order_price AS "결제금액",
+                   to_char(o.ordered_at, 'YYYY-MM-DD') AS "주문일",
+                   o.receiver_name AS "수취인",
+                   o.status AS "상태",
+                   o.delivery_company_name AS "택배사",
+                   o.invoice_number AS "운송장번호",
+                   to_char(o.delivered_date, 'YYYY-MM-DD') AS "배송완료일",
+                   COALESCE(o.canceled, false) AS "취소",
+                   o.account_id AS "_account_id",
+                   o.vendor_item_id AS "_vendor_item_id",
+                   o.seller_product_id AS "_seller_product_id",
+                   o.order_price AS "_order_price_raw",
+                   to_char(o.ordered_at, 'YYYY-MM-DD HH24:MI:SS') AS "주문일시",
+                   o.orderer_name AS "구매자",
+                   '' AS "구매자전화번호",
+                   '' AS "수취인전화번호",
+                   o.receiver_post_code AS "우편번호",
+                   o.receiver_addr AS "수취인주소",
+                   '' AS "배송메세지",
+                   COALESCE(o.shipping_price, 0) AS "배송비",
+                   0 AS "도서산간추가배송비",
+                   COALESCE(o.refer, '') AS "결제위치",
+                   false AS "분리배송가능",
+                   '' AS "주문시출고예정일",
+                   '' AS "배송비구분",
+                   COALESCE(o.sales_price, 0) AS "판매단가",
+                   '' AS "최초등록상품옵션명",
+                   '' AS "업체상품코드",
+                   '' AS "개인통관번호",
+                   '' AS "통관용전화번호"
+            FROM orders o
+            JOIN accounts a ON o.account_id = a.id
+            WHERE o.status = 'FINAL_DELIVERY'
+              AND o.ordered_at >= :date_from
+            ORDER BY "주문일시" DESC
         """, {"date_from": _from})
 
     # 동기화 대상 상태 — 전체 (진행중 + 배송중 + 완료)

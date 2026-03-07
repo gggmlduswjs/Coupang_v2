@@ -10,7 +10,6 @@ from dashboard.pages.products_list import render_tab_list
 from dashboard.pages.products_inventory import render_tab_inventory
 from dashboard.pages.products_register import render_tab_register
 from dashboard.pages.products_manual import render_tab_manual
-from dashboard.pages.products_search import render_tab_search
 
 
 def render(selected_account, accounts_df, account_names):
@@ -133,8 +132,8 @@ def render(selected_account, accounts_df, account_names):
 
     st.divider()
 
-    # ═══ 5개 탭 ═══
-    pm_tab1, pm_tab2, pm_tab3, pm_tab4, pm_tab5 = st.tabs(["상품 목록", "가격/재고", "신규 등록", "수동 등록", "검색 등록"])
+    # ═══ 4개 탭 ═══
+    pm_tab1, pm_tab2, pm_tab3, pm_tab4 = st.tabs(["상품 목록", "가격/재고", "신규 등록", "수동 등록"])
 
     with pm_tab1:
         render_tab_list(account_id, selected_account, accounts_df, _wing_client)
@@ -144,5 +143,3 @@ def render(selected_account, accounts_df, account_names):
         render_tab_register(account_id, selected_account, accounts_df, _wing_client)
     with pm_tab4:
         render_tab_manual(account_id, selected_account, accounts_df, _wing_client)
-    with pm_tab5:
-        render_tab_search(account_id, selected_account, accounts_df, _wing_client)

@@ -25,14 +25,12 @@
 ├── operations/          # 상품관리/동기화/엑셀/모니터링
 │   ├── product_manager.py   # 개별 상품 CRUD
 │   ├── product_api.py       # 일괄 상품 관리
-│   ├── sync_corrections.py  # 계정 간 동기화
-│   ├── upload_excel.py      # 엑셀 파일 관리
 │   ├── uploader.py          # API 상품 등록
 │   ├── bundle_manager.py    # 세트물 관리 (통합)
 │   └── ...                  # backup, inventory, exposure 등
 ├── cli/                 # CLI 인터페이스
 │   ├── main.py          # argparse + dispatch (~550줄)
-│   └── commands/        # 핸들러 (analysis, management, upload, product, catalog)
+│   └── commands/        # 핸들러 (analysis, management, product, catalog)
 ├── dashboard/           # Streamlit 대시보드
 ├── scripts/             # 운영 스크립트 (카테고리별)
 ├── data/                # 런타임 데이터
@@ -63,7 +61,6 @@ python -m cli.main xray -k "키워드"
 
 # 상품 관리 (← 쿠팡데이터분석)
 python -m cli.main product list -a 007-ez
-python -m cli.main upload register -a 007-ez -f "파일.xlsx" --dry-run
 
 # 대시보드 (← Coupong)
 streamlit run dashboard/app.py

@@ -12,6 +12,47 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # ─── URL 결정 ───
 
+def _load_database_url_from_streamlit_secrets() -> str | None:
+    """Streamlit secrets에서 DATABASE_URL 조회."""
+    try:
+        import streamlit as st
+    except ModuleNotFoundError:
+        return None
+
+    try:
+        secrets = st.secrets
+        if "DATABASE_URL" in secrets and secrets["DATABASE_URL"]:
+            _logger.info("DATABASE_URL: st.secrets에서 로드")
+            return secrets["DATABASE_URL"]
+
+        supabase = secrets.get("supabase")
+        if isinstance(supabase, dict) and supabase.get("database_url"):
+            _logger.info("DATABASE_URL: st.secrets[supabase]에서 로드")
+            return supabase["database_url"]
+    except Exception as exc:
+        _logger.warning(f"Streamlit secrets에서 DATABASE_URL 로드 실패: {exc}")
+
+    return None
+
+
+def _load_database_url_from_settings() -> str | None:
+    """core.config.settings에서 DATABASE_URL 조회."""
+    try:
+        from core.config import settings
+    except Exception as exc:
+        _logger.warning(f"core.config.settings import 실패: {exc}")
+        return None
+
+    if settings.supabase_database_url:
+        _logger.info("DATABASE_URL: core.config.settings.supabase_database_url에서 로드")
+        return settings.supabase_database_url
+
+    if settings.database_url:
+        _logger.info("DATABASE_URL: core.config.settings.database_url에서 로드")
+        return settings.database_url
+
+    return None
+
 def _resolve_database_url() -> str:
     """DATABASE_URL 결정: 환경변수 → Streamlit secrets → 기본 SQLite"""
 
@@ -22,32 +63,15 @@ def _resolve_database_url() -> str:
         return url
 
     # 2) Streamlit secrets 직접 조회 (app.py 주입보다 늦게 임포트되는 경우 대비)
-    try:
-        import streamlit as st
-        secrets = st.secrets  # noqa — AttributeError 발생 시 except로
-        if "DATABASE_URL" in secrets:
-            url = secrets["DATABASE_URL"]
-            if url:
-                _logger.info("DATABASE_URL: st.secrets에서 로드")
-                os.environ["DATABASE_URL"] = url  # 이후 호출을 위해 캐시
-                return url
-        if "supabase" in secrets and "database_url" in secrets["supabase"]:
-            url = secrets["supabase"]["database_url"]
-            if url:
-                _logger.info("DATABASE_URL: st.secrets[supabase]에서 로드")
-                os.environ["DATABASE_URL"] = url
-                return url
-    except Exception:
-        pass
+    url = _load_database_url_from_streamlit_secrets()
+    if url:
+        os.environ["DATABASE_URL"] = url  # 이후 호출을 위해 캐시
+        return url
 
     # 3) core/config.py 설정
-    try:
-        from core.config import settings
-        if settings.supabase_database_url:
-            return settings.supabase_database_url
-        return settings.database_url
-    except Exception:
-        pass
+    url = _load_database_url_from_settings()
+    if url:
+        return url
 
     # 4) 기본 SQLite (로컬 개발 전용)
     default_db = ROOT / "data" / "coupang.db"
@@ -85,6 +109,7 @@ def get_engine_for_db(db_path: str = None):
     """스크립트용 엔진 헬퍼"""
     if db_path is None:
         return _create_engine_for_url(_resolve_database_url())
+    db_path = str(db_path)
     if db_path.startswith(("postgresql://", "postgres://", "sqlite:///")):
         return _create_engine_for_url(db_path)
     return _create_engine_for_url(f"sqlite:///{db_path}")
@@ -113,6 +138,8 @@ def get_db():
 
 def init_db():
     """데이터베이스 초기화 (테이블 생성)"""
+    # create_all 전에 모델을 모두 import해야 metadata에 테이블이 등록된다.
+    import core.models  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
 
@@ -125,8 +152,9 @@ class CoupangDB:
     CoupangDB 메서드를 그대로 사용할 수 있도록 SQLAlchemy ORM을 래핑.
     """
 
-    def __init__(self, config=None):
-        self._session = SessionLocal()
+    def __init__(self, config=None, session_factory=None):
+        self._session_factory = session_factory or SessionLocal
+        self._session = self._session_factory()
         self._config = config
 
     # ── 공통 ──────────────────────────────────────────
@@ -169,7 +197,7 @@ class CoupangDB:
 
     def update_snapshot_count(self, snapshot_id: int, total: int):
         from core.models.keyword import Snapshot
-        snap = self._session.query(Snapshot).get(snapshot_id)
+        snap = self._session.get(Snapshot, snapshot_id)
         if snap:
             snap.total_products = total
             self._session.commit()
@@ -211,7 +239,7 @@ class CoupangDB:
 
     def update_product_enrichment(self, product_id: int, category: str, image_count: int, sku: str):
         from core.models.keyword import SearchResult
-        sr = self._session.query(SearchResult).get(product_id)
+        sr = self._session.get(SearchResult, product_id)
         if sr:
             sr.category = category
             sr.image_count = image_count
@@ -272,7 +300,7 @@ class CoupangDB:
 
     def update_account_status(self, account_id: int, status: str):
         from core.models.account import Account
-        acc = self._session.query(Account).get(account_id)
+        acc = self._session.get(Account, account_id)
         if acc:
             acc.status = status
             self._session.commit()
@@ -397,7 +425,7 @@ class CoupangDB:
                                     inventory_product_id: int = None, account_id: int = None):
         from core.models.catalog import CatalogMatch
         if match_id:
-            m = self._session.query(CatalogMatch).get(match_id)
+            m = self._session.get(CatalogMatch, match_id)
             if m:
                 m.status = status
         elif inventory_product_id and account_id:

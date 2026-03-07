@@ -13,7 +13,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 _IS_LOCAL = sys.platform == "win32"
-_CAN_CALL_API = _IS_LOCAL or os.environ.get("RAILWAY_ENVIRONMENT")
+_CAN_CALL_API = True
 _WING_CREDS_PATH = Path(__file__).resolve().parents[2] / "wing_creds.json"
 
 
@@ -24,7 +24,7 @@ _WING_CREDS_PATH = Path(__file__).resolve().parents[2] / "wing_creds.json"
 def _load_creds() -> dict:
     if "wing_creds_override" in st.session_state:
         return st.session_state["wing_creds_override"]
-    if _IS_LOCAL and _WING_CREDS_PATH.exists():
+    if _WING_CREDS_PATH.exists():
         try:
             raw = json.loads(_WING_CREDS_PATH.read_text(encoding="utf-8"))
             return {k.lower(): {"id": v.get("id", ""), "pw": v.get("pw", "")} for k, v in raw.items()}
@@ -74,16 +74,20 @@ body{{padding:4px 0;}}
 .btn-one:hover{{background:#f0f0f0;border-color:#E4002B;color:#E4002B;}}
 </style></head>
 <body>
-<button class="btn-all" onclick="location.href='wing://open-all'">5개 계정 전부 열기</button>
+<button class="btn-all" onclick="openAll()">5개 계정 전부 열기</button>
 <div class="grid" id="grid"></div>
 <script>
 const NAMES = {names_js};
+const WING_URL = 'https://wing.coupang.com';
+function openAll() {{
+  NAMES.forEach(n => window.open(WING_URL, '_blank'));
+}}
 const grid = document.getElementById('grid');
 NAMES.forEach(n => {{
   const b = document.createElement('button');
   b.className = 'btn-one';
   b.textContent = n;
-  b.onclick = () => location.href = 'wing://open/' + n;
+  b.onclick = () => window.open(WING_URL, '_blank');
   grid.appendChild(b);
 }});
 </script>
@@ -105,19 +109,29 @@ _STATUS_MAP = {
 
 @st.cache_data(ttl=30)
 def _load_order_stats() -> dict:
-    """계정별 주문 상태 집계. {account_name: {status: count, ...}, ...}"""
+    """계정별 주문 상태 집계. {account_name: {status: count, ...}, ...}
+    활성 상태(ACCEPT~DELIVERING)는 날짜 필터 없이 현재 전체,
+    배송완료(FINAL_DELIVERY)만 30일 필터 적용."""
     from dashboard.utils import query_df
     df = query_df("""
-        SELECT a.account_name,
-               o.status,
+        SELECT a.account_name, o.status,
                COUNT(DISTINCT o.shipment_box_id) AS cnt
         FROM orders o
         JOIN accounts a ON o.account_id = a.id
         WHERE a.is_active = true
           AND o.canceled = false
+          AND o.status IN ('ACCEPT','INSTRUCT','DEPARTURE','DELIVERING')
+        GROUP BY a.account_name, o.status
+        UNION ALL
+        SELECT a.account_name, o.status,
+               COUNT(DISTINCT o.shipment_box_id) AS cnt
+        FROM orders o
+        JOIN accounts a ON o.account_id = a.id
+        WHERE a.is_active = true
+          AND o.canceled = false
+          AND o.status = 'FINAL_DELIVERY'
           AND o.ordered_at >= NOW() - INTERVAL '30 days'
         GROUP BY a.account_name, o.status
-        ORDER BY a.account_name
     """)
     if df.empty:
         return {}
@@ -219,13 +233,8 @@ def _show_last_sync_time():
         last = df.iloc[0]["last_sync"]
         try:
             import pandas as pd
-            if isinstance(last, pd.Timestamp):
-                if last.tzinfo is None:
-                    last = last.tz_localize("UTC").tz_convert(_KST)
-                else:
-                    last = last.tz_convert(_KST)
-            elif hasattr(last, "astimezone"):
-                last = last.astimezone(_KST)
+            if isinstance(last, pd.Timestamp) and last.tzinfo is not None:
+                last = last.tz_convert("Asia/Seoul")
         except Exception:
             pass
         st.caption(f"마지막 동기화: {last:%Y-%m-%d %H:%M:%S}")
@@ -245,8 +254,12 @@ def render(selected_account, accounts_df, account_names):
     creds = _load_creds()
     names = accounts_df["account_name"].tolist()
 
-    # ── wing:// 버튼 ────────────────────────────
-    components.html(_launcher_html(names), height=105)
+    # ── Wing 셀러센터 바로가기 ────────────────────
+    st.link_button("5개 계정 전부 열기", "wing://open-all", use_container_width=True, type="primary")
+    cols = st.columns(len(names))
+    for i, name in enumerate(names):
+        with cols[i]:
+            st.link_button(name, f"wing://open/{name}", use_container_width=True)
 
     # ── 자격증명 설정 (접힘) ─────────────────────
     all_set = all(_match_cred(creds, n).get("id") and _match_cred(creds, n).get("pw") for n in names)

@@ -67,7 +67,7 @@ if selected_account_name and not accounts_df.empty:
         selected_account = accounts_df[mask].iloc[0]
 
 st.sidebar.divider()
-page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "상품", "매출/정산", "광고", "반품", "갭 분석"], key="sidebar_menu")
+page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "상품", "반품"], key="sidebar_menu")
 
 if os.environ.get("RAILWAY_ENVIRONMENT"):
     try:
@@ -98,20 +98,8 @@ elif page == "상품":
     from dashboard.pages.products import render
     render(selected_account, accounts_df, account_names)
 
-elif page == "매출/정산":
-    from dashboard.pages.profit import render
-    render(selected_account, accounts_df, account_names)
-
-elif page == "광고":
-    from dashboard.pages.ads import render
-    render(selected_account, accounts_df, account_names)
-
 elif page == "반품":
     from dashboard.pages.returns import render
-    render(selected_account, accounts_df, account_names)
-
-elif page == "갭 분석":
-    from dashboard.pages.gap_analysis import render
     render(selected_account, accounts_df, account_names)
 
 

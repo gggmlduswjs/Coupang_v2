@@ -18,7 +18,8 @@ import time
 import urllib.request
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stdout:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── 설정 ──────────────────────────────────────────────
 ACCOUNTS = [
@@ -159,12 +160,19 @@ def _do_auto_login(account_name: str, user_data: Path, port: int, wing_id: str, 
             pw_el.dispatchEvent(new Event('input', {bubbles: true}));
             pw_el.dispatchEvent(new Event('change', {bubbles: true}));
             setTimeout(function() {
-                var btns = document.querySelectorAll('button');
-                for (var i = 0; i < btns.length; i++) {
-                    if (btns[i].textContent.indexOf('로그인') >= 0) {
-                        btns[i].click(); break;
+                pw_el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,bubbles:true}));
+                pw_el.dispatchEvent(new KeyboardEvent('keypress', {key:'Enter',code:'Enter',keyCode:13,bubbles:true}));
+                pw_el.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter',code:'Enter',keyCode:13,bubbles:true}));
+                setTimeout(function() {
+                    var btn = document.querySelector('input[type="submit"]') || document.querySelector('button[type="submit"]');
+                    if (!btn) {
+                        var btns = document.querySelectorAll('button');
+                        for (var i = 0; i < btns.length; i++) {
+                            if (btns[i].textContent.indexOf('로그인') >= 0) { btn = btns[i]; break; }
+                        }
                     }
-                }
+                    if (btn) btn.click();
+                }, 300);
             }, 500);
             return 'LOGIN_SUBMITTED';
         })(%s, %s)
@@ -242,7 +250,12 @@ def main():
     if "--register" in args or "wing://register" in url:
         register_protocol()
 
-    elif not url or url == "wing://open-all":
+    elif not url:
+        # 직접 실행 시 → 등록 + 전체 열기
+        register_protocol()
+        open_all()
+
+    elif "open-all" in url:
         open_all()
 
     elif url.startswith("wing://open/"):
@@ -251,11 +264,6 @@ def main():
             open_account(account)
         else:
             print(f"알 수 없는 계정: {account}")
-
-    else:
-        # 직접 실행 시 → 등록 + 전체 열기
-        register_protocol()
-        open_all()
 
 
 if __name__ == "__main__":

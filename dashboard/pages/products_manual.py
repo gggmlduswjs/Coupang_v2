@@ -348,9 +348,16 @@ def render_tab_manual(account_id, selected_account, accounts_df, _wing_client):
                     if not _ttb_key:
                         st.error("ALADIN_TTB_KEY 환경변수가 설정되지 않았습니다.")
                     else:
-                        from core.api.aladin_client import AladinAPICrawler
-                        _crawler = AladinAPICrawler(ttb_key=_ttb_key)
-                        _result = _crawler.search_by_isbn(_isbn_input)
+                        try:
+                            from core.api.aladin_client import AladinAPICrawler
+                        except ImportError:
+                            st.error("알라딘 API 모듈이 아카이브되었습니다. (_archive/core/api/aladin_client.py)")
+                            AladinAPICrawler = None
+                        if AladinAPICrawler is None:
+                            _result = None
+                        else:
+                            _crawler = AladinAPICrawler(ttb_key=_ttb_key)
+                            _result = _crawler.search_by_isbn(_isbn_input)
                         if _result:
                             st.session_state["m_title"] = _result.get("title", "")
                             st.session_state["m_author"] = _result.get("author", "")

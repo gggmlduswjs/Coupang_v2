@@ -1,4 +1,4 @@
-"""관리 CLI 명령: account, inv, backup, xray, ad"""
+"""관리 CLI 명령: account, inv, backup"""
 
 from core.database import SessionLocal
 from core.models import Account, InventoryProduct
@@ -137,31 +137,3 @@ def cmd_backup(args, config):
         if path:
             print(f"  완료: {path}")
 
-
-def cmd_xray(args, config):
-    """쿠팡 시스템 역공학 분석"""
-    from analysis.reverse_engineer import run_reverse_engineering
-
-    print(f"\n[역공학] 키워드: '{args.keyword}'")
-    results = run_reverse_engineering(args.keyword, config=config)
-    if not results:
-        return
-
-    # JSON 저장 옵션
-    if args.output:
-        import json
-        with open(args.output, "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2, default=str)
-        print(f"\n  결과 저장: {args.output}")
-
-
-def cmd_ad(args, config):
-    """광고 추천 리포트"""
-    from operations.ad_report import generate_ad_report
-
-    src = getattr(args, "source", "db")
-    label = "API 실시간" if src == "api" else "DB 재고"
-    print(f"\n[광고추천] 계정: {args.account} ({label})")
-    filepath = generate_ad_report(args.account, config=config, output=args.output, source=src)
-    if filepath:
-        print(f"\n  리포트: {filepath}")
