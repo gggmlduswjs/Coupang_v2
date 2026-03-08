@@ -281,7 +281,7 @@ def render(selected_account, accounts_df, account_names):
                                     _cl.reply_online_inquiry(
                                         inquiry_id=int(_sel_id),
                                         content=_reply_content.strip(),
-                                        reply_by=str(_reply_account["vendor_id"]),
+                                        reply_by=str(_reply_account["account_code"]),
                                     )
                                     st.success(f"답변 등록 완료: 문의 {_sel_id}")
                                     _clear_cs_cache()
@@ -379,7 +379,7 @@ def render(selected_account, accounts_df, account_names):
                                         _cl.reply_callcenter_inquiry(
                                             inquiry_id=int(_cc_sel),
                                             content=_cc_content.strip(),
-                                            reply_by=str(_cc_account["vendor_id"]),
+                                            reply_by=str(_cc_account["account_code"]),
                                             parent_answer_id=int(_parent_id),
                                         )
                                         st.success(f"답변 등록 완료: 상담번호 {_cc_sel}")
@@ -408,7 +408,7 @@ def render(selected_account, accounts_df, account_names):
                                 try:
                                     _cl.confirm_callcenter_inquiry(
                                         inquiry_id=int(_cc_sel),
-                                        confirm_by=str(_cf_account["vendor_id"]),
+                                        confirm_by=str(_cf_account["account_code"]),
                                     )
                                     st.success(f"확인 처리 완료: 상담번호 {_cc_sel}")
                                     _clear_cs_cache()
