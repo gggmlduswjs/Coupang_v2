@@ -304,32 +304,61 @@ def render(selected_account, accounts_df, account_names):
         if _t2_instruct.empty:
             st.info("상품준비중(INSTRUCT) 상태의 주문이 없습니다.")
         else:
-            # 2-1. 주문 확인 그리드
+            # 2-1. 주문 확인 그리드 (체크박스)
             _inst_display = _inst_by_box[["계정", "묶음배송번호", "주문번호", "상품명", "수량", "결제금액", "주문일", "수취인"]].copy()
-            _inst_display["결제금액"] = _inst_display["결제금액"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+            _inst_display["결제금액_표시"] = _inst_display["결제금액"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+            _grid_cols = ["계정", "묶음배송번호", "주문번호", "상품명", "수량", "결제금액_표시", "주문일", "수취인"]
+            _inst_grid_df = _inst_display[_grid_cols].rename(columns={"결제금액_표시": "결제금액"})
 
-            gb_inst = GridOptionsBuilder.from_dataframe(_inst_display)
+            gb_inst = GridOptionsBuilder.from_dataframe(_inst_grid_df)
             gb_inst.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20)
             gb_inst.configure_default_column(resizable=True, sorteable=True, filterable=True)
             gb_inst.configure_column("상품명", width=350)
-            AgGrid(_inst_display, gridOptions=gb_inst.build(), height=400, theme="streamlit", key="t2_instruct_grid")
+            gb_inst.configure_selection(
+                "multiple", use_checkbox=True,
+                header_checkbox=True,
+                pre_selected_rows=list(range(len(_inst_grid_df))),
+            )
+            _inst_grid_result = AgGrid(
+                _inst_grid_df, gridOptions=gb_inst.build(), height=400, theme="streamlit",
+                key="t2_instruct_grid", update_mode="SELECTION_CHANGED",
+            )
+
+            # 선택된 주문만 필터링
+            _t2_selected_rows = _inst_grid_result.get("selected_rows", None)
+            _t2_has_sel = False
+            if _t2_selected_rows is not None:
+                if isinstance(_t2_selected_rows, pd.DataFrame) and not _t2_selected_rows.empty:
+                    _t2_sel_df = _t2_selected_rows
+                    _t2_has_sel = True
+                elif isinstance(_t2_selected_rows, list) and len(_t2_selected_rows) > 0:
+                    _t2_sel_df = pd.DataFrame(_t2_selected_rows)
+                    _t2_has_sel = True
+
+            if _t2_has_sel:
+                _sel_box_ids = _t2_sel_df["묶음배송번호"].unique().tolist()
+                _t2_filtered = _t2_instruct[_t2_instruct["묶음배송번호"].isin(_sel_box_ids)].copy()
+                st.info(f"선택: {len(_t2_sel_df)}건 ({len(_sel_box_ids)}묶음) / 전체: {len(_inst_by_box)}건 — 체크 해제한 주문은 아래 엑셀/송장에서 제외됩니다")
+            else:
+                _t2_filtered = _t2_instruct.copy()
+                st.info(f"전체 {len(_inst_by_box)}건 — 체크박스로 배송 보류 주문 제외 가능")
 
             st.divider()
 
             # 2-2. 발주서 생성
-            _render_purchase_order(_t2_instruct, accounts_df)
+            _render_purchase_order(_t2_filtered, accounts_df)
 
             # 2-3. 극동 엑셀
-            _render_geukdong_excel(_t2_instruct, accounts_df)
+            _render_geukdong_excel(_t2_filtered, accounts_df)
 
             # 2-4. 배송리스트 다운로드
-            _render_delivery_list(_t2_instruct)
+            _render_delivery_list(_t2_filtered)
 
             # 2-5. 한진 N-Focus 송장 발급
             _render_hanjin_nfocus()
 
             # 2-6. 쿠팡 송장 등록
-            _render_invoice_upload(_t2_instruct, accounts_df)
+            _render_invoice_upload(_t2_filtered, accounts_df)
 
     # ══════════════════════════════════════
     # 탭3: 배송현황
