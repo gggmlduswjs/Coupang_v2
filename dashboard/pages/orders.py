@@ -1211,10 +1211,12 @@ def _match_by_name(hanjin_df, delivery_df, recv_col, accounts_df):
             continue
 
         # 배송리스트에서 같은 수취인 찾기 (미사용 행 중)
-        _candidates = _dl[
-            (_dl["수취인이름"].astype(str).str.strip() == _hj_name)
-            & (~_dl.index.isin(_used_dl_indices))
-        ]
+        _avail = _dl[~_dl.index.isin(_used_dl_indices)]
+        _candidates = _avail[_avail["수취인이름"].astype(str).str.strip() == _hj_name]
+
+        # 수취인 매칭 실패 시 구매자 이름으로 fallback
+        if _candidates.empty and "구매자" in _dl.columns:
+            _candidates = _avail[_avail["구매자"].astype(str).str.strip() == _hj_name]
 
         if _candidates.empty:
             st.warning(f"수취인 '{_hj_name}' 매칭 실패 (배송리스트에 없음)")
