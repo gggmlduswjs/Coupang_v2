@@ -358,20 +358,129 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
             if _has_api:
                 # 실시간 조회 탭
                 with _at[1]:
-                    if st.button("실시간 조회", key="btn_realtime"):
+                    _sel_spid = sel.get("쿠팡ID", "")
+                    if st.button("WING 실시간 조회", key="btn_realtime", type="primary", use_container_width=True):
+                        # ── 1) 인벤토리 (가격/재고/판매상태) ──
                         try:
                             _inv_info = _wing_client.get_item_inventory(int(_sel_vid))
                             _inv_data = _inv_info.get("data", _inv_info)
+                            st.markdown("#### 가격/재고/판매상태")
                             _ri1, _ri2, _ri3, _ri4 = st.columns(4)
                             _ri1.metric("쿠팡 판매가", f"{_inv_data.get('salePrice', '-'):,}원" if isinstance(_inv_data.get('salePrice'), int) else str(_inv_data.get('salePrice', '-')))
                             _ri2.metric("기준가", f"{_inv_data.get('originalPrice', '-'):,}원" if isinstance(_inv_data.get('originalPrice'), int) else str(_inv_data.get('originalPrice', '-')))
                             _ri3.metric("재고", str(_inv_data.get('quantity', _inv_data.get('maximumBuyCount', '-'))))
                             _ri4.metric("판매상태", str(_inv_data.get('salesStatus', _inv_data.get('status', '-'))))
-                            st.json(_inv_data)
-                        except CoupangWingError as e:
-                            st.error(f"API 오류: {e.message}")
-                        except Exception as e:
-                            st.error(f"조회 실패: {e}")
+                        except Exception:
+                            pass
+
+                        # ── 2) 상품 상세 (get_product) ──
+                        if _sel_spid and _sel_spid != "-":
+                            try:
+                                _prod = _wing_client.get_product(int(_sel_spid))
+                                _pd = _prod.get("data", _prod)
+
+                                st.divider()
+                                st.markdown("#### 상품 상세")
+
+                                # 기본 정보
+                                _pi1, _pi2 = st.columns(2)
+                                with _pi1:
+                                    st.write(f"**등록상품명:** {_pd.get('sellerProductName', '-')}")
+                                    st.write(f"**노출상품명:** {_pd.get('displayProductName', '-')}")
+                                    st.write(f"**브랜드:** {_pd.get('brand', '-')}")
+                                    st.write(f"**제품명:** {_pd.get('generalProductName', '-')}")
+                                    st.write(f"**상태:** {_pd.get('statusName', '-')}")
+                                with _pi2:
+                                    st.write(f"**카테고리:** {_pd.get('displayCategoryCode', '-')}")
+                                    st.write(f"**배송방법:** {_pd.get('deliveryMethod', '-')}")
+                                    _dct = _pd.get('deliveryChargeType', '-')
+                                    _dc = _pd.get('deliveryCharge', 0)
+                                    _fsa = _pd.get('freeShipOverAmount', 0)
+                                    st.write(f"**배송비:** {_dct} (기본: {_dc:,}원, 조건부무료: {_fsa:,}원↑)")
+                                    st.write(f"**반품배송비:** {_pd.get('returnCharge', 0):,}원")
+                                    st.write(f"**묶음배송:** {_pd.get('unionDeliveryType', '-')}")
+
+                                # 옵션(items) 목록
+                                _items = _pd.get("items", [])
+                                if _items:
+                                    st.divider()
+                                    st.markdown(f"#### 옵션 ({len(_items)}개)")
+                                    _item_rows = []
+                                    for _it in _items:
+                                        _item_rows.append({
+                                            "옵션명": _it.get("itemName", ""),
+                                            "판매가": f"{_it.get('salePrice', 0):,}",
+                                            "기준가": f"{_it.get('originalPrice', 0):,}",
+                                            "재고": _it.get("maximumBuyCount", 0),
+                                            "출고일": _it.get("outboundShippingTimeDay", "-"),
+                                            "vendorItemId": _it.get("vendorItemId", ""),
+                                            "바코드": _it.get("barcode", "") or "",
+                                            "업체상품코드": _it.get("externalVendorSku", "") or "",
+                                        })
+                                    st.dataframe(pd.DataFrame(_item_rows), use_container_width=True, hide_index=True)
+
+                                    # 선택된 옵션의 검색어/이미지/속성
+                                    _first_item = _items[0]
+
+                                    # 검색어
+                                    _tags = _first_item.get("searchTags", [])
+                                    if _tags:
+                                        st.markdown(f"**검색어:** {', '.join(str(t) for t in _tags)}")
+
+                                    # 속성 (구매옵션/검색옵션)
+                                    _attrs = _first_item.get("attributes", [])
+                                    if _attrs:
+                                        _attr_rows = []
+                                        for _a in _attrs:
+                                            _attr_rows.append({
+                                                "옵션타입": _a.get("attributeTypeName", ""),
+                                                "옵션값": _a.get("attributeValueName", ""),
+                                                "구분": "구매옵션" if _a.get("exposed") == "EXPOSED" else "검색옵션",
+                                                "수정가능": _a.get("editable", ""),
+                                            })
+                                        with st.expander(f"속성/옵션 ({len(_attrs)}개)"):
+                                            st.dataframe(pd.DataFrame(_attr_rows), use_container_width=True, hide_index=True)
+
+                                    # 이미지
+                                    _images = _first_item.get("images", [])
+                                    if _images:
+                                        with st.expander(f"이미지 ({len(_images)}개)"):
+                                            _img_cols = st.columns(min(len(_images), 5))
+                                            for _idx, _img in enumerate(_images[:5]):
+                                                _url = _img.get("cdnPath", _img.get("vendorPath", ""))
+                                                if _url and not _url.startswith("http"):
+                                                    _url = f"https://thumbnail7.coupangcdn.com/thumbnails/remote/292x292ex/{_url}"
+                                                if _url:
+                                                    _img_cols[_idx].image(_url, caption=_img.get("imageType", ""), width=150)
+
+                                    # 고시정보
+                                    _notices = _first_item.get("notices", [])
+                                    if _notices:
+                                        with st.expander(f"상품고시정보 ({len(_notices)}개)"):
+                                            _notice_rows = [{"항목": n.get("noticeCategoryDetailName", ""), "내용": n.get("content", "")} for n in _notices]
+                                            st.dataframe(pd.DataFrame(_notice_rows), use_container_width=True, hide_index=True)
+
+                                # 반품지 정보
+                                with st.expander("배송/반품지 정보"):
+                                    _rc1, _rc2 = st.columns(2)
+                                    with _rc1:
+                                        st.write(f"**출고지코드:** {_pd.get('outboundShippingPlaceCode', '-')}")
+                                        st.write(f"**택배사:** {_pd.get('deliveryCompanyCode', '-')}")
+                                        st.write(f"**도서산간:** {_pd.get('remoteAreaDeliverable', '-')}")
+                                    with _rc2:
+                                        st.write(f"**반품지:** {_pd.get('returnAddress', '')} {_pd.get('returnAddressDetail', '')}")
+                                        st.write(f"**반품지우편번호:** {_pd.get('returnZipCode', '-')}")
+                                        st.write(f"**반품센터코드:** {_pd.get('returnCenterCode', '-')}")
+                                        st.write(f"**반품연락처:** {_pd.get('companyContactNumber', '-')}")
+
+                                # 전체 JSON (접기)
+                                with st.expander("전체 API 응답 (JSON)"):
+                                    st.json(_pd)
+
+                            except CoupangWingError as e:
+                                st.error(f"상품 상세 조회 실패: {e.message}")
+                            except Exception as e:
+                                st.error(f"상품 상세 조회 실패: {e}")
 
                 # 판매 중지/재개 탭
                 with _at[2]:
