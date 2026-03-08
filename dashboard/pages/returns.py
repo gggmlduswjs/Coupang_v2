@@ -324,11 +324,19 @@ def render(selected_account, accounts_df, account_names):
 
     # ── 탭2: 반품 처리 ──
     with tab2:
-        if selected_account is None:
-            st.warning("사이드바에서 계정을 선택하세요.")
+        # 처리용 계정 선택
+        _proc_acct_name = st.selectbox("처리 계정", account_names, key="ret_proc_acct")
+        _proc_account = None
+        if _proc_acct_name and not accounts_df.empty:
+            _mask = accounts_df["account_name"] == _proc_acct_name
+            if _mask.any():
+                _proc_account = accounts_df[_mask].iloc[0]
+
+        if _proc_account is None:
+            st.warning("계정을 선택하세요.")
         else:
-            _acct_name = selected_account["account_name"]
-            _client = create_wing_client(selected_account)
+            _acct_name = _proc_account["account_name"]
+            _client = create_wing_client(_proc_account)
 
             # 해당 계정 데이터만
             _acct_df = _all[_all["계정"] == _acct_name] if not _all.empty else pd.DataFrame()
@@ -409,11 +417,19 @@ def render(selected_account, accounts_df, account_names):
 
     # ── 탭3: 회수 송장 등록 ──
     with tab3:
-        if selected_account is None:
-            st.warning("사이드바에서 계정을 선택하세요.")
+        # 처리용 계정 선택
+        _inv_acct_name = st.selectbox("처리 계정", account_names, key="ret_inv_acct")
+        _inv_account = None
+        if _inv_acct_name and not accounts_df.empty:
+            _mask3 = accounts_df["account_name"] == _inv_acct_name
+            if _mask3.any():
+                _inv_account = accounts_df[_mask3].iloc[0]
+
+        if _inv_account is None:
+            st.warning("계정을 선택하세요.")
         else:
-            _acct_name3 = selected_account["account_name"]
-            _client3 = create_wing_client(selected_account)
+            _acct_name3 = _inv_account["account_name"]
+            _client3 = create_wing_client(_inv_account)
 
             st.subheader("회수 송장 등록")
             st.caption("굿스플로(반품자동연동) 미사용 시, 반품접수 상태에서 직접 회수 송장을 등록합니다.")

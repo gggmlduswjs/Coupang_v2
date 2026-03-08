@@ -58,16 +58,7 @@ accounts_df = query_df("""
 """)
 account_names = accounts_df["account_name"].tolist() if not accounts_df.empty else []
 
-selected_account_name = st.sidebar.selectbox("계정 선택", account_names, index=0 if account_names else None, key="sidebar_account")
-
-selected_account = None
-if selected_account_name and not accounts_df.empty:
-    mask = accounts_df["account_name"] == selected_account_name
-    if mask.any():
-        selected_account = accounts_df[mask].iloc[0]
-
-st.sidebar.divider()
-page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "상품", "반품"], key="sidebar_menu")
+page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "반품", "CS", "상품"], key="sidebar_menu")
 
 if os.environ.get("RAILWAY_ENVIRONMENT"):
     try:
@@ -77,30 +68,28 @@ if os.environ.get("RAILWAY_ENVIRONMENT"):
     except Exception:
         pass
 
-if selected_account is not None:
-    st.sidebar.divider()
-    st.sidebar.caption("계정 정보")
-    st.sidebar.text(f"Vendor: {selected_account.get('vendor_id', '-')}")
-    st.sidebar.text(f"출고지: {selected_account.get('outbound_shipping_code', '-')}")
-    st.sidebar.text(f"반품지: {selected_account.get('return_center_code', '-')}")
-
 
 # ─── 페이지 라우팅 ───
+# 상품 페이지는 내부에서 계정 선택 처리 (selected_account 불필요)
+# 주문/배송, 반품은 전 계정 실시간 조회 (selected_account는 처리 탭에서만 사용)
+
 if page == "Wing 바로가기":
     from dashboard.pages.wing_login import render
-    render(selected_account, accounts_df, account_names)
+    render(None, accounts_df, account_names)
 
 elif page == "주문/배송":
     from dashboard.pages.orders import render
-    render(selected_account, accounts_df, account_names)
-
-elif page == "상품":
-    from dashboard.pages.products import render
-    render(selected_account, accounts_df, account_names)
+    render(None, accounts_df, account_names)
 
 elif page == "반품":
     from dashboard.pages.returns import render
-    render(selected_account, accounts_df, account_names)
+    render(None, accounts_df, account_names)
 
+elif page == "CS":
+    from dashboard.pages.cs import render
+    render(None, accounts_df, account_names)
 
+elif page == "상품":
+    from dashboard.pages.products import render
+    render(None, accounts_df, account_names)
 
