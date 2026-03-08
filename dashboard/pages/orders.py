@@ -1109,9 +1109,9 @@ def _match_by_sequence(hanjin_df, delivery_df, accounts_df):
         st.error("순번 컬럼을 찾을 수 없습니다.")
         return None
 
-    # 수취인 컬럼 (검증용)
+    # 수취인 컬럼 (검증용) — 한진 엑셀은 "받으시는 분" (공백 포함)
     _recv_col = None
-    for col in ["받으시는분", "수취인", "수취인이름", "받는분"]:
+    for col in ["받으시는 분", "받으시는분", "수취인", "수취인이름", "받는분"]:
         if col in _hj.columns:
             _recv_col = col
             break
