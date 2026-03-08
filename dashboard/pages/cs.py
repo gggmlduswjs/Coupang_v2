@@ -232,14 +232,19 @@ def render(selected_account, accounts_df, account_names):
                 st.info("해당 조건의 문의가 없습니다.")
             else:
                 _show_cols = ["계정", "문의ID", "답변상태", "문의내용", "문의일시", "답변수"]
-                st.dataframe(df[[c for c in _show_cols if c in df.columns]], use_container_width=True, hide_index=True, height=400)
+                _show_df = df[[c for c in _show_cols if c in df.columns]].reset_index(drop=True)
+                _event = st.dataframe(
+                    _show_df, use_container_width=True, hide_index=True, height=400,
+                    selection_mode="single-row", on_select="rerun", key="cs_online_table",
+                )
 
-                # 상세
-                _ids = df["문의ID"].tolist()
-                _sel_id = st.selectbox("문의 선택 (상세)", _ids, key="cs_online_sel")
-                _row = df[df["문의ID"] == _sel_id].iloc[0]
+                # 행 클릭 → 상세
+                _sel_rows = _event.selection.rows if _event and _event.selection else []
+                _sel_idx = _sel_rows[0] if _sel_rows else 0
+                _row = df.iloc[_sel_idx]
+                _sel_id = _row["문의ID"]
 
-                with st.expander(f"문의 상세 — {_sel_id}", expanded=False):
+                with st.expander(f"문의 상세 — {_sel_id}", expanded=bool(_sel_rows)):
                     st.write(f"**문의내용:** {_row['문의내용']}")
                     st.write(f"**문의일시:** {_row['문의일시']}")
                     st.write(f"**상품ID:** {_row.get('상품ID', '-')} | **옵션ID:** {_row.get('옵션ID', '-')}")
@@ -313,14 +318,19 @@ def render(selected_account, accounts_df, account_names):
                 st.info("해당 조건의 문의가 없습니다.")
             else:
                 _cc_show = ["계정", "상담번호", "답변상태", "답변필요", "문의유형", "상품명", "문의일시", "주문번호", "답변수"]
-                st.dataframe(cc_df[[c for c in _cc_show if c in cc_df.columns]], use_container_width=True, hide_index=True, height=400)
+                _cc_show_df = cc_df[[c for c in _cc_show if c in cc_df.columns]].reset_index(drop=True)
+                _cc_event = st.dataframe(
+                    _cc_show_df, use_container_width=True, hide_index=True, height=400,
+                    selection_mode="single-row", on_select="rerun", key="cs_cc_table",
+                )
 
-                # 상세
-                _cc_ids = cc_df["상담번호"].tolist()
-                _cc_sel = st.selectbox("상담번호 선택 (상세)", _cc_ids, key="cs_cc_sel")
-                _cc_row = cc_df[cc_df["상담번호"] == _cc_sel].iloc[0]
+                # 행 클릭 → 상세
+                _cc_sel_rows = _cc_event.selection.rows if _cc_event and _cc_event.selection else []
+                _cc_sel_idx = _cc_sel_rows[0] if _cc_sel_rows else 0
+                _cc_row = cc_df.iloc[_cc_sel_idx]
+                _cc_sel = _cc_row["상담번호"]
 
-                with st.expander(f"상담 상세 — {_cc_sel}", expanded=False):
+                with st.expander(f"상담 상세 — {_cc_sel}", expanded=bool(_cc_sel_rows)):
                     st.write(f"**문의유형:** {_cc_row.get('문의유형', '-')}")
                     st.write(f"**상품명:** {_cc_row.get('상품명', '-')}")
                     st.write(f"**문의일시:** {_cc_row['문의일시']}")
