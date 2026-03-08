@@ -1269,78 +1269,94 @@ class CoupangWingClient:
             처리 결과
         """
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/returnRequests/{receipt_id}/receiveConfirmation"
-        return self._request("PUT", path)
+        data = {
+            "vendorId": self.vendor_id,
+            "receiptId": receipt_id,
+        }
+        return self._request("PUT", path, data=data)
 
-    def approve_return_request(self, receipt_id: int) -> Dict[str, Any]:
+    def approve_return_request(self, receipt_id: int, cancel_count: int = 1) -> Dict[str, Any]:
         """
         반품 승인
 
         Args:
             receipt_id: 접수번호
+            cancel_count: 반품접수 수량
 
         Returns:
             처리 결과
         """
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/returnRequests/{receipt_id}/approval"
-        return self._request("PUT", path)
+        data = {
+            "vendorId": self.vendor_id,
+            "receiptId": receipt_id,
+            "cancelCount": cancel_count,
+        }
+        return self._request("PUT", path, data=data)
 
     def get_return_withdrawals(self, date_from: str, date_to: str,
-                                max_per_page: int = 50, token: str = "") -> Dict[str, Any]:
+                                size_per_page: int = 50, page_index: int = 1) -> Dict[str, Any]:
         """
-        반품 철회 이력 조회 (기간별)
+        반품 철회 이력 조회 (기간별, 최대 7일)
 
         Args:
             date_from: 시작일 (YYYY-MM-DD)
             date_to: 종료일 (YYYY-MM-DD)
-            max_per_page: 페이지당 건수
-            token: 페이징 토큰
+            size_per_page: 페이지당 건수 (기본 50, 최대 100)
+            page_index: 페이지 인덱스 (기본 1)
 
         Returns:
             철회 이력 응답
         """
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/returnWithdrawRequests"
         params = {
-            "createdAtFrom": date_from,
-            "createdAtTo": date_to,
-            "maxPerPage": str(max_per_page),
+            "dateFrom": date_from,
+            "dateTo": date_to,
+            "sizePerPage": str(size_per_page),
+            "pageIndex": str(page_index),
         }
-        if token:
-            params["token"] = token
         return self._request("GET", path, params=params)
 
-    def get_return_withdrawals_by_ids(self, receipt_ids: List[int]) -> Dict[str, Any]:
+    def get_return_withdrawals_by_ids(self, cancel_ids: List[int]) -> Dict[str, Any]:
         """
-        반품 철회 이력 조회 (접수번호 기반)
+        반품 철회 이력 조회 (접수번호 기반, 최대 50개)
 
         Args:
-            receipt_ids: 접수번호 리스트
+            cancel_ids: 접수번호 리스트
 
         Returns:
             철회 이력 응답
         """
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/returnWithdrawList"
-        data = {"receiptIds": receipt_ids}
+        data = {"cancelIds": cancel_ids}
         return self._request("POST", path, data=data)
 
     def create_return_invoice(self, receipt_id: int, delivery_company_code: str,
-                               invoice_number: str) -> Dict[str, Any]:
+                               invoice_number: str,
+                               delivery_type: str = "RETURN",
+                               reg_number: str = "") -> Dict[str, Any]:
         """
         회수 송장 등록 (수동 회수 시)
 
         Args:
             receipt_id: 접수번호
-            delivery_company_code: 택배사 코드 (CJGLS, EPOST 등)
+            delivery_company_code: 택배사 코드 (CJGLS, EPOST, KDEXP 등)
             invoice_number: 운송장번호
+            delivery_type: RETURN(반품) 또는 EXCHANGE(교환)
+            reg_number: 택배사 회수번호 (선택)
 
         Returns:
             처리 결과
         """
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/return-exchange-invoices/manual"
         data = {
+            "returnExchangeDeliveryType": delivery_type,
             "receiptId": receipt_id,
             "deliveryCompanyCode": delivery_company_code,
             "invoiceNumber": invoice_number,
         }
+        if reg_number:
+            data["regNumber"] = reg_number
         return self._request("POST", path, data=data)
 
     # ─────────────────────────────────────────────
