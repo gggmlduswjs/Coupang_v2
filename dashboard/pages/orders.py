@@ -1210,16 +1210,18 @@ def _match_by_name(hanjin_df, delivery_df, recv_col, accounts_df):
             _match_fail += 1
             continue
 
-        # 배송리스트에서 같은 수취인 찾기 (미사용 행 중)
+        # 배송리스트에서 매칭 (구매자 우선, 수취인 fallback)
         _avail = _dl[~_dl.index.isin(_used_dl_indices)]
-        _candidates = _avail[_avail["수취인이름"].astype(str).str.strip() == _hj_name]
+        _candidates = pd.DataFrame()
 
-        # 수취인 매칭 실패 시 구매자 이름으로 fallback
-        if _candidates.empty and "구매자" in _dl.columns:
+        if "구매자" in _dl.columns:
             _candidates = _avail[_avail["구매자"].astype(str).str.strip() == _hj_name]
 
         if _candidates.empty:
-            st.warning(f"수취인 '{_hj_name}' 매칭 실패 (배송리스트에 없음)")
+            _candidates = _avail[_avail["수취인이름"].astype(str).str.strip() == _hj_name]
+
+        if _candidates.empty:
+            st.warning(f"'{_hj_name}' 매칭 실패 (배송리스트에 없음)")
             _match_fail += 1
             continue
 
