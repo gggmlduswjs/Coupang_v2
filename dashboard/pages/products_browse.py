@@ -4,6 +4,7 @@ import logging
 import re
 import time
 import json as _json
+from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -198,6 +199,279 @@ def _load_listings(account_id, status_filter="전체", search_q=""):
     """, params)
 
 
+def _run_wing_sync(accounts_df, quick=False, force=False, stale_hours=24):
+    """WING API 동기화 실행 (Streamlit 진행 표시)"""
+    from psycopg2.extras import execute_values
+    from core.api.wing_client import CoupangWingClient
+
+    isbn_pattern = re.compile(r'97[89]\d{10}')
+    now = datetime.utcnow()
+
+    # 활성 WING 계정만
+    wing_accts = accounts_df[accounts_df["wing_api_enabled"] == True]
+    if wing_accts.empty:
+        st.warning("WING API가 활성화된 계정이 없습니다.")
+        return
+
+    total_result = {"total": 0, "new": 0, "updated": 0, "detail_synced": 0, "detail_error": 0}
+    _log = st.container()
+    _progress = st.progress(0, text="동기화 준비 중...")
+
+    for acct_idx, (_, acct_row) in enumerate(wing_accts.iterrows()):
+        acct_name = acct_row["account_name"]
+        acct_id = int(acct_row["id"])
+        _progress.progress(
+            acct_idx / len(wing_accts),
+            text=f"[{acct_idx+1}/{len(wing_accts)}] {acct_name} — Stage 1 목록 조회 중...",
+        )
+
+        client = create_wing_client(acct_row)
+        if client is None:
+            _log.caption(f"{acct_name}: WING 클라이언트 생성 실패, 건너뜀")
+            continue
+
+        # ── Stage 1: list_products ──
+        try:
+            products = client.list_products(max_per_page=100, max_pages=0)
+        except CoupangWingError as e:
+            _log.warning(f"{acct_name}: 목록 조회 실패 — {e.message}")
+            continue
+
+        total_result["total"] += len(products)
+
+        # 기존 listings 로드
+        existing_rows = query_df(
+            "SELECT id, coupang_product_id, isbn, vendor_item_id FROM listings WHERE account_id = :aid",
+            {"aid": acct_id},
+        )
+        by_pid = {}
+        by_isbn = {}
+        for _, erow in existing_rows.iterrows():
+            d = {"id": erow["id"], "coupang_product_id": erow["coupang_product_id"],
+                 "isbn": erow.get("isbn"), "vendor_item_id": erow.get("vendor_item_id")}
+            if d["coupang_product_id"]:
+                by_pid[int(d["coupang_product_id"])] = d
+            if d["isbn"] and pd.notna(d["isbn"]):
+                by_isbn[str(d["isbn"])] = d
+
+        upsert_rows = []
+        new_cnt, upd_cnt = 0, 0
+
+        for pdata in products:
+            spid = int(pdata.get("sellerProductId", 0))
+            # ISBN 추출
+            isbns = set()
+            for item in pdata.get("items", []):
+                for field in ["barcode", "externalVendorSku"]:
+                    for m in isbn_pattern.finditer(str(item.get(field, ""))):
+                        isbns.add(m.group())
+                for tag in (item.get("searchTags") or []):
+                    for m in isbn_pattern.finditer(str(tag)):
+                        isbns.add(m.group())
+                attrs = item.get("attributes", [])
+                if isinstance(attrs, list):
+                    for attr in attrs:
+                        if attr.get("attributeTypeName") == "ISBN":
+                            cleaned = re.sub(r'[^0-9]', '', str(attr.get("attributeValueName", "")))
+                            if len(cleaned) == 13 and cleaned.startswith(("978", "979")):
+                                isbns.add(cleaned)
+            isbn_str = ",".join(sorted(isbns)) if isbns else None
+
+            vid = None
+            items = pdata.get("items", [])
+            if items:
+                vid = items[0].get("vendorItemId")
+                if vid:
+                    vid = int(vid)
+
+            # 상태
+            status_raw = pdata.get("statusName", pdata.get("status", ""))
+            _smap = {"판매중": "active", "승인완료": "active", "APPROVE": "active",
+                     "판매중지": "paused", "SUSPEND": "paused", "품절": "sold_out",
+                     "SOLDOUT": "sold_out", "승인반려": "rejected", "삭제": "deleted", "승인대기": "pending"}
+            coupang_status = _smap.get(status_raw, "pending")
+            product_name = pdata.get("sellerProductName", "")
+
+            sale_price = items[0].get("salePrice", 0) or 0 if items else 0
+            original_price = items[0].get("originalPrice", 0) or 0 if items else 0
+
+            existing = by_pid.get(spid)
+            if not existing and isbn_str:
+                existing = by_isbn.get(isbn_str)
+
+            if existing:
+                upd_cnt += 1
+            else:
+                new_cnt += 1
+
+            upsert_rows.append((
+                acct_id, spid, vid, isbn_str,
+                coupang_status, sale_price, original_price, product_name,
+                now, now, now,
+            ))
+
+        # 벌크 UPSERT
+        if upsert_rows:
+            raw_conn = engine.raw_connection()
+            try:
+                cur = raw_conn.cursor()
+                sql = """
+                    INSERT INTO listings (account_id, coupang_product_id, vendor_item_id, isbn,
+                        coupang_status, sale_price, original_price, product_name,
+                        synced_at, created_at, updated_at)
+                    VALUES %s
+                    ON CONFLICT (account_id, coupang_product_id) DO UPDATE SET
+                        coupang_status = EXCLUDED.coupang_status,
+                        product_name = EXCLUDED.product_name,
+                        vendor_item_id = COALESCE(EXCLUDED.vendor_item_id, listings.vendor_item_id),
+                        sale_price = CASE WHEN EXCLUDED.sale_price > 0 THEN EXCLUDED.sale_price ELSE listings.sale_price END,
+                        original_price = CASE WHEN EXCLUDED.original_price > 0 THEN EXCLUDED.original_price ELSE listings.original_price END,
+                        isbn = COALESCE(listings.isbn, EXCLUDED.isbn),
+                        synced_at = EXCLUDED.synced_at,
+                        updated_at = NOW()
+                """
+                BATCH = 500
+                for i in range(0, len(upsert_rows), BATCH):
+                    execute_values(cur, sql, upsert_rows[i:i+BATCH], page_size=BATCH)
+                raw_conn.commit()
+                cur.close()
+            except Exception as e:
+                raw_conn.rollback()
+                _log.error(f"{acct_name}: 벌크 UPSERT 실패 — {e}")
+            finally:
+                raw_conn.close()
+
+        total_result["new"] += new_cnt
+        total_result["updated"] += upd_cnt
+        _log.caption(f"{acct_name}: {len(products)}개 조회, 신규 {new_cnt}, 업데이트 {upd_cnt}")
+
+        # ── Stage 2: 상세 조회 (quick이 아닐 때) ──
+        if not quick and upsert_rows:
+            # 상세 조회 대상 선별 (detail_synced_at이 NULL이거나 stale)
+            stale_cutoff = now - timedelta(hours=stale_hours)
+            if force:
+                detail_targets = query_df(
+                    "SELECT id, coupang_product_id, vendor_item_id, detail_synced_at FROM listings WHERE account_id = :aid AND coupang_product_id IS NOT NULL",
+                    {"aid": acct_id},
+                )
+            else:
+                detail_targets = query_df(
+                    "SELECT id, coupang_product_id, vendor_item_id, detail_synced_at FROM listings WHERE account_id = :aid AND coupang_product_id IS NOT NULL AND (detail_synced_at IS NULL OR detail_synced_at < :cutoff)",
+                    {"aid": acct_id, "cutoff": stale_cutoff},
+                )
+
+            if not detail_targets.empty:
+                _log.caption(f"{acct_name}: Stage 2 상세 조회 {len(detail_targets)}건...")
+                _detail_ok, _detail_err = 0, 0
+
+                for di, (_, drow) in enumerate(detail_targets.iterrows()):
+                    if di % 10 == 0:
+                        _progress.progress(
+                            (acct_idx + (di / len(detail_targets))) / len(wing_accts),
+                            text=f"[{acct_idx+1}/{len(wing_accts)}] {acct_name} — Stage 2 상세 {di+1}/{len(detail_targets)}",
+                        )
+                    pid = int(drow["coupang_product_id"])
+                    try:
+                        result = client.get_product(pid)
+                        data = result.get("data", result) if isinstance(result, dict) else result
+                        if not isinstance(data, dict):
+                            continue
+
+                        # 파싱
+                        brand = data.get("brand", "") or ""
+                        disp_cat = str(data.get("displayCategoryCode", "")) or ""
+                        del_type = data.get("deliveryChargeType", "") or ""
+                        del_charge = data.get("deliveryCharge")
+                        free_ship = data.get("freeShipOverAmount")
+                        ret_charge = data.get("returnCharge")
+                        supply_price = None
+                        orig_price = None
+                        sale_price_d = None
+                        isbn_d = None
+                        publisher_d = None
+                        d_items = data.get("items", [])
+                        if d_items:
+                            d_item = d_items[0]
+                            supply_price = d_item.get("supplyPrice")
+                            orig_price = d_item.get("originalPrice")
+                            sale_price_d = d_item.get("salePrice")
+                            for attr in (d_item.get("attributes") or []):
+                                aname = attr.get("attributeTypeName", "")
+                                aval = attr.get("attributeValueName", "")
+                                if aname == "ISBN" and aval and "상세" not in aval:
+                                    cleaned = re.sub(r'[^0-9]', '', aval)
+                                    if len(cleaned) == 13:
+                                        isbn_d = cleaned
+                                elif aname == "출판사" and aval and "상세" not in aval:
+                                    publisher_d = aval
+
+                        # 재고/판매상태
+                        vid_val = drow.get("vendor_item_id")
+                        on_sale_status = None
+                        stock_qty = None
+                        if vid_val and pd.notna(vid_val) and int(vid_val) > 0:
+                            try:
+                                inv = client.get_item_inventory(int(vid_val))
+                                inv_data = inv.get("data", inv) if isinstance(inv, dict) else {}
+                                on_sale_status = "active" if inv_data.get("onSale", True) else "paused"
+                                stock_qty = inv_data.get("amountInStock")
+                            except Exception:
+                                pass
+
+                        # DB 업데이트
+                        _parts = ["brand=:brand", "display_category_code=:dcc",
+                                  "delivery_charge_type=:dct", "delivery_charge=:dc",
+                                  "free_ship_over_amount=:fso", "return_charge=:rc",
+                                  "raw_json=:rj", "detail_synced_at=:dsa"]
+                        _p = {"id": int(drow["id"]), "brand": brand, "dcc": disp_cat,
+                              "dct": del_type, "dc": del_charge, "fso": free_ship, "rc": ret_charge,
+                              "rj": _json.dumps(data, ensure_ascii=False), "dsa": now}
+                        if supply_price:
+                            _parts.append("supply_price=:sup")
+                            _p["sup"] = supply_price
+                        if orig_price and orig_price > 0:
+                            _parts.append("original_price=:op")
+                            _p["op"] = orig_price
+                        if sale_price_d and sale_price_d > 0:
+                            _parts.append("sale_price=:sp")
+                            _p["sp"] = sale_price_d
+                        if isbn_d:
+                            _parts.append("isbn=COALESCE(listings.isbn, :isbn)")
+                            _p["isbn"] = isbn_d
+                        if on_sale_status:
+                            _parts.append("coupang_status=:cs")
+                            _p["cs"] = on_sale_status
+                        if stock_qty is not None:
+                            _parts.append("stock_quantity=:sq")
+                            _p["sq"] = stock_qty
+
+                        run_sql(f"UPDATE listings SET {', '.join(_parts)} WHERE id=:id", _p)
+                        _detail_ok += 1
+                        time.sleep(0.08)
+
+                    except CoupangWingError as e:
+                        _detail_err += 1
+                        if e.status_code == 429 or "RATE" in str(getattr(e, 'code', '')).upper():
+                            time.sleep(1)
+                    except Exception:
+                        _detail_err += 1
+
+                total_result["detail_synced"] += _detail_ok
+                total_result["detail_error"] += _detail_err
+                _log.caption(f"{acct_name}: Stage 2 완료 — 성공 {_detail_ok}, 실패 {_detail_err}")
+
+    _progress.progress(1.0, text="동기화 완료!")
+
+    # 결과 요약
+    _log.success(
+        f"동기화 완료: 총 {total_result['total']}개 조회, "
+        f"신규 {total_result['new']}, 업데이트 {total_result['updated']}"
+        + (f", 상세 {total_result['detail_synced']}건" if total_result['detail_synced'] else "")
+        + (f", 상세실패 {total_result['detail_error']}건" if total_result['detail_error'] else "")
+    )
+    st.cache_data.clear()
+
+
 def _render_all_products(pub_rates):
     """전체 상품 목록 (모든 계정, 검색+수정 가능)"""
     st.subheader("전체 상품")
@@ -354,10 +628,13 @@ def render(selected_account, accounts_df, account_names):
     """상품조회 페이지 메인"""
     st.title("상품조회")
 
-    tab1, tab2 = st.tabs(["전체 현황", "불일치/누락 관리"])
+    tab1, tab_winner, tab2 = st.tabs(["전체 현황", "아이템위너", "불일치/누락 관리"])
 
     with tab1:
         _render_dashboard(accounts_df, account_names)
+
+    with tab_winner:
+        _render_item_winner(accounts_df, account_names)
 
     with tab2:
         _render_mismatch(accounts_df, account_names)
@@ -397,6 +674,28 @@ def _render_dashboard(accounts_df, account_names):
         c6.metric("정가초과", f"{int(r['price_over_cnt'])}건",
                   delta=f"⚠ {int(r['price_over_cnt'])}" if int(r['price_over_cnt']) > 0 else "정상",
                   delta_color="inverse" if int(r['price_over_cnt']) > 0 else "normal")
+
+    # ── WING 동기화 ──
+    _sync_col1, _sync_col2, _sync_col3, _sync_col4 = st.columns([1.5, 1.5, 1, 6])
+    with _sync_col1:
+        _sync_quick = st.button("빠른 동기화 (목록만)", key="bw_sync_quick", type="primary", use_container_width=True)
+    with _sync_col2:
+        _sync_full = st.button("전체 동기화 (상세포함)", key="bw_sync_full", use_container_width=True)
+    with _sync_col3:
+        _sync_force = st.checkbox("강제", key="bw_sync_force", help="이미 동기화된 상품도 다시 조회")
+
+    # 마지막 동기화 시간
+    _last_sync = query_df("SELECT MAX(synced_at) as last FROM listings")
+    if not _last_sync.empty and _last_sync.iloc[0]["last"]:
+        with _sync_col4:
+            st.caption(f"마지막 동기화: {_last_sync.iloc[0]['last']}")
+
+    if _sync_quick:
+        _run_wing_sync(accounts_df, quick=True)
+    elif _sync_full:
+        _run_wing_sync(accounts_df, quick=False, force=_sync_force, stale_hours=24)
+
+    st.divider()
 
     # ── 계정별 요약 테이블 ──
     acct_sum = query_df("""
@@ -619,7 +918,294 @@ def _render_detail(sel, account_id, account_name, _wing_client):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Tab 2: 불일치/누락 관리
+# Tab: 아이템위너
+# ═══════════════════════════════════════════════════════════════
+
+def _parse_winner_excel(uploaded_file):
+    """쿠팡 가격관리 엑셀 파싱 (header=1, 안내 행 스킵)"""
+    df = pd.read_excel(uploaded_file, header=1, dtype=str)
+    df.columns = df.columns.str.strip()
+    # 빈 행 제거
+    id_col = next((c for c in df.columns if "노출상품" in c or "상품ID" in c), df.columns[0])
+    df = df[df[id_col].notna() & (df[id_col] != "")]
+    return df
+
+
+def _classify_winner(df):
+    """위너 여부 판정 컬럼 추가"""
+    # '아이템위너가 대비 내 판매가' = 0 이면 위너
+    _diff_col = next((c for c in df.columns if "아이템위너가 대비" in c or "위너가 대비" in c), None)
+    # '내상품 판매 점유율' = 100% 이면 위너
+    _share_col = next((c for c in df.columns if "판매 점유율" in c or "점유율" in c), None)
+
+    def _is_winner(row):
+        # 방법 1: 가격 차이가 0
+        if _diff_col:
+            try:
+                diff = int(str(row.get(_diff_col, "")).replace(",", "").strip() or "999")
+                if diff == 0:
+                    return "위너"
+            except (ValueError, TypeError):
+                pass
+        # 방법 2: 점유율 100%
+        if _share_col:
+            share = str(row.get(_share_col, "")).strip()
+            if share == "100%":
+                return "위너"
+        return "비위너"
+
+    df = df.copy()
+    df["위너여부"] = df.apply(_is_winner, axis=1)
+    return df
+
+
+def _render_item_winner(accounts_df, account_names):
+    """아이템위너 탭: 계정별 엑셀 업로드 + 위너 분석"""
+
+    st.subheader("아이템위너 현황")
+    st.caption("WING → 가격관리 → 엑셀 다운로드 파일을 업로드하세요.")
+
+    if "winner_data" not in st.session_state:
+        st.session_state["winner_data"] = {}
+
+    # ── 업로드 영역 ──
+    _uc1, _uc2 = st.columns([2, 5])
+    with _uc1:
+        _sel_acct = st.selectbox("계정 선택", account_names, key="winner_acct")
+    with _uc2:
+        _uploaded = st.file_uploader(
+            "엑셀 파일 (.xlsx)",
+            type=["xlsx", "xls"],
+            key="winner_upload",
+        )
+
+    if _uploaded and _sel_acct:
+        try:
+            _raw_df = _parse_winner_excel(_uploaded)
+            _raw_df = _classify_winner(_raw_df)
+            st.session_state["winner_data"][_sel_acct] = _raw_df
+            st.success(f"{_sel_acct}: {len(_raw_df)}건 로드 완료")
+        except Exception as e:
+            st.error(f"엑셀 읽기 실패: {e}")
+
+    _loaded = {k: v for k, v in st.session_state["winner_data"].items() if not v.empty}
+    if not _loaded:
+        st.info("엑셀 파일을 업로드하면 아이템위너 현황이 표시됩니다.")
+        return
+
+    st.divider()
+
+    # ── 전체 계정 요약 ──
+    _summary = []
+    _total_all, _winner_all, _loser_all = 0, 0, 0
+    _total_sales_all, _winner_sales_all = 0, 0
+    for _acct, _df in _loaded.items():
+        _w = len(_df[_df["위너여부"] == "위너"])
+        _l = len(_df) - _w
+        _rate = f"{_w / len(_df) * 100:.1f}%" if len(_df) > 0 else "-"
+        # 매출 집계
+        _sales_col = next((c for c in _df.columns if "나의 지난주 매출" in c or "지난주 매출" in c), None)
+        _my_sales = 0
+        _w_sales = 0
+        if _sales_col:
+            _s = _df[_sales_col].str.replace(",", "", regex=False).apply(pd.to_numeric, errors="coerce").fillna(0)
+            _my_sales = int(_s.sum())
+            _w_sales = int(_s[_df["위너여부"] == "위너"].sum())
+        _summary.append({"계정": _acct, "전체": len(_df), "위너": _w, "비위너": _l,
+                         "위너율": _rate, "총매출": f"{_my_sales:,}원", "위너매출": f"{_w_sales:,}원"})
+        _total_all += len(_df)
+        _winner_all += _w
+        _loser_all += _l
+        _total_sales_all += _my_sales
+        _winner_sales_all += _w_sales
+
+    # 전체 KPI
+    _k1, _k2, _k3, _k4, _k5 = st.columns(5)
+    _k1.metric("전체 상품", f"{_total_all:,}건")
+    _k2.metric("위너", f"{_winner_all:,}건")
+    _k3.metric("비위너", f"{_loser_all:,}건")
+    _k4.metric("위너율", f"{_winner_all / _total_all * 100:.1f}%" if _total_all else "-")
+    _k5.metric("위너 매출 비중", f"{_winner_sales_all / _total_sales_all * 100:.1f}%" if _total_sales_all else "-")
+
+    if len(_summary) > 1:
+        st.dataframe(pd.DataFrame(_summary), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── 계정별 상세 ──
+    for _acct, _df in _loaded.items():
+        with st.expander(f"📦 {_acct} ({len(_df)}건)", expanded=len(_loaded) == 1):
+            # 컬럼명 매핑 (단축)
+            _COL = {}
+            for c in _df.columns:
+                if "노출상품" in c:
+                    _COL["pid"] = c
+                elif "옵션ID" in c and "옵션ID" not in _COL:
+                    _COL["vid"] = c
+                elif c == "상품명":
+                    _COL["name"] = c
+                elif "내판매가" in c:
+                    _COL["my_price"] = c
+                elif "아이템위너가 대비" in c:
+                    _COL["diff"] = c
+                elif "가격범위" in c:
+                    _COL["range"] = c
+                elif "쿠팡추천가" in c:
+                    _COL["rec"] = c
+                elif "시작/중지" in c:
+                    _COL["status"] = c
+                elif "나의 지난주 매출" in c:
+                    _COL["my_sales"] = c
+                elif "나의 지난주 판매개수" in c:
+                    _COL["my_qty"] = c
+                elif "판매 점유율" in c:
+                    _COL["share"] = c
+                elif "쿠팡전체매출" in c:
+                    _COL["total_sales"] = c
+                elif "쿠팡전체 판매개수" in c:
+                    _COL["total_qty"] = c
+                elif "예상매출" in c:
+                    _COL["forecast"] = c
+                elif "판매자 상품코드" in c:
+                    _COL["isbn"] = c
+
+            # 필터
+            _fc1, _fc2, _fc3 = st.columns([1, 1, 3])
+            with _fc1:
+                _w_filter = st.selectbox("위너 필터", ["전체", "위너만", "비위너만"], key=f"wf_{_acct}")
+            with _fc2:
+                if "status" in _COL:
+                    _st_vals = ["전체"] + sorted(_df[_COL["status"]].dropna().unique().tolist())
+                    _st_filter = st.selectbox("시작/중지", _st_vals, key=f"wsf_{_acct}")
+                else:
+                    _st_filter = "전체"
+            with _fc3:
+                _w_search = st.text_input("검색 (상품명 / ISBN)", key=f"ws_{_acct}")
+
+            _filtered = _df.copy()
+            if _w_filter == "위너만":
+                _filtered = _filtered[_filtered["위너여부"] == "위너"]
+            elif _w_filter == "비위너만":
+                _filtered = _filtered[_filtered["위너여부"] == "비위너"]
+            if "status" in _COL and _st_filter != "전체":
+                _filtered = _filtered[_filtered[_COL["status"]] == _st_filter]
+            if _w_search:
+                _mask = pd.Series(False, index=_filtered.index)
+                if "name" in _COL:
+                    _mask |= _filtered[_COL["name"]].str.contains(_w_search, case=False, na=False)
+                if "isbn" in _COL:
+                    _mask |= _filtered[_COL["isbn"]].str.contains(_w_search, case=False, na=False)
+                if "pid" in _COL:
+                    _mask |= _filtered[_COL["pid"]].str.contains(_w_search, case=False, na=False)
+                _filtered = _filtered[_mask]
+
+            if _filtered.empty:
+                st.info("조건에 맞는 상품이 없습니다.")
+                continue
+
+            # KPI
+            _w_cnt = len(_filtered[_filtered["위너여부"] == "위너"])
+            _l_cnt = len(_filtered) - _w_cnt
+            _rate = f"{_w_cnt / len(_filtered) * 100:.1f}%" if len(_filtered) > 0 else "-"
+
+            _ki1, _ki2, _ki3, _ki4 = st.columns(4)
+            _ki1.metric("표시 상품", f"{len(_filtered):,}건")
+            _ki2.metric("위너", f"{_w_cnt:,}건")
+            _ki3.metric("비위너", f"{_l_cnt:,}건")
+            _ki4.metric("위너율", _rate)
+
+            # 테이블 — 핵심 컬럼 선택
+            _show_cols = ["위너여부"]
+            for _key in ["name", "my_price", "diff", "rec", "share", "my_sales", "my_qty",
+                         "total_sales", "total_qty", "forecast", "status", "pid", "vid", "isbn"]:
+                if _key in _COL and _COL[_key] in _filtered.columns:
+                    _show_cols.append(_COL[_key])
+            _grid_df = _filtered[_show_cols].copy()
+
+            gb = GridOptionsBuilder.from_dataframe(_grid_df)
+            gb.configure_selection(selection_mode="single", use_checkbox=False)
+            if "name" in _COL:
+                gb.configure_column(_COL["name"], minWidth=250)
+            gb.configure_column("위너여부", width=80)
+            gb.configure_grid_options(domLayout="normal")
+            _grid = AgGrid(
+                _grid_df,
+                gridOptions=gb.build(),
+                update_on=["selectionChanged"],
+                height=450,
+                theme="streamlit",
+                key=f"wg_{_acct}",
+            )
+
+            # 행 선택 → DB 매칭 + 상세
+            _sel_rows = _grid["selected_rows"]
+            if _sel_rows is not None and len(_sel_rows) > 0:
+                _sel = _sel_rows.iloc[0] if hasattr(_sel_rows, "iloc") else pd.Series(_sel_rows[0])
+
+                st.divider()
+                _sel_name = str(_sel.get(_COL.get("name", ""), ""))[:60]
+                _sel_winner = _sel.get("위너여부", "")
+                _badge = "**위너**" if _sel_winner == "위너" else "비위너"
+                st.markdown(f"#### {_sel_name}  ({_badge})")
+
+                # 엑셀 데이터 상세
+                _dc1, _dc2, _dc3, _dc4, _dc5 = st.columns(5)
+                _my_p = str(_sel.get(_COL.get("my_price", ""), "-"))
+                _rec_p = str(_sel.get(_COL.get("rec", ""), "-"))
+                _diff_p = str(_sel.get(_COL.get("diff", ""), "-"))
+                _share_v = str(_sel.get(_COL.get("share", ""), "-"))
+                _forecast_v = str(_sel.get(_COL.get("forecast", ""), "-"))
+                _dc1.metric("내 판매가", f"{_my_p}원")
+                _dc2.metric("쿠팡추천가", f"{_rec_p}원")
+                _dc3.metric("위너가 대비 차이", f"{_diff_p}원")
+                _dc4.metric("판매 점유율", _share_v)
+                _dc5.metric("28일 예상매출", f"{_forecast_v}원")
+
+                # DB 매칭
+                _match_df = pd.DataFrame()
+                _vid_val = str(_sel.get(_COL.get("vid", ""), "")).strip()
+                _pid_val = str(_sel.get(_COL.get("pid", ""), "")).strip()
+                if _vid_val:
+                    _match_df = query_df(
+                        "SELECT l.product_name, l.sale_price, l.original_price, l.isbn, "
+                        "l.coupang_status, l.brand, l.coupang_product_id "
+                        "FROM listings l JOIN accounts a ON a.id = l.account_id "
+                        "WHERE CAST(l.vendor_item_id AS TEXT) = :vid AND a.account_name = :acct LIMIT 1",
+                        {"vid": _vid_val, "acct": _acct},
+                    )
+                if _match_df.empty and _pid_val:
+                    _match_df = query_df(
+                        "SELECT l.product_name, l.sale_price, l.original_price, l.isbn, "
+                        "l.coupang_status, l.brand, l.coupang_product_id "
+                        "FROM listings l JOIN accounts a ON a.id = l.account_id "
+                        "WHERE CAST(l.coupang_product_id AS TEXT) = :cpid AND a.account_name = :acct LIMIT 1",
+                        {"cpid": _pid_val, "acct": _acct},
+                    )
+
+                if not _match_df.empty:
+                    _m = _match_df.iloc[0]
+                    _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+                    _mc1.metric("DB 판매가", f"{int(_m.get('sale_price') or 0):,}원")
+                    _mc2.metric("DB 정가", f"{int(_m.get('original_price') or 0):,}원")
+                    _mc3.metric("DB 상태", str(_m.get("coupang_status", "-")))
+                    _mc4.metric("출판사", str(_m.get("brand", "-"))[:15])
+
+            # 엑셀 다운로드
+            _xl_buf = io.BytesIO()
+            with pd.ExcelWriter(_xl_buf, engine="openpyxl") as writer:
+                _filtered[_show_cols].to_excel(writer, sheet_name="아이템위너", index=False)
+            _xl_buf.seek(0)
+            st.download_button(
+                f"엑셀 다운로드 ({len(_filtered):,}건)",
+                _xl_buf.getvalue(),
+                file_name=f"아이템위너_{_acct}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"wd_{_acct}",
+            )
+
+
+# ═══════════════════════════════════════════════════════════════
+# Tab 3: 불일치/누락 관리
 # ═══════════════════════════════════════════════════════════════
 
 def _render_mismatch(accounts_df, account_names):
