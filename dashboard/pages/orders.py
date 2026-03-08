@@ -3,7 +3,7 @@
 ====================
 탭1: 결제완료 (ACCEPT) → 발주확인
 탭2: 상품준비중 (INSTRUCT) → 발주서/극동/배송리스트/한진/송장등록
-탭3: 배송현황 (DEPARTURE/DELIVERING/FINAL_DELIVERY)
+탭3: 배송지시 (DEPARTURE) → 발주서/극동 다운로드
 """
 import io
 import logging
@@ -98,7 +98,7 @@ def render(selected_account, accounts_df, account_names):
     st.divider()
 
     # ── 3탭 ──
-    _tab1, _tab2, _tab3 = st.tabs(["결제완료", "상품준비중", "배송현황"])
+    _tab1, _tab2, _tab3 = st.tabs(["결제완료", "상품준비중", "배송지시"])
 
     # ══════════════════════════════════════
     # 탭1: 결제완료 (ACCEPT) → 발주확인
@@ -361,27 +361,25 @@ def render(selected_account, accounts_df, account_names):
             _render_invoice_upload(_t2_filtered, accounts_df)
 
     # ══════════════════════════════════════
-    # 탭3: 배송현황
+    # 탭3: 배송지시 (DEPARTURE) → 발주서/극동 다운로드
     # ══════════════════════════════════════
     with _tab3:
-        st.caption("배송지시/배송중/배송완료 주문 조회")
+        st.caption("배송지시(출고완료) 주문 조회 · 발주서/극동 엑셀 다운로드")
 
-        _t3c1, _t3c2 = st.columns(2)
-        with _t3c1:
-            _t3_status = st.selectbox("배송 상태", ["DEPARTURE", "DELIVERING", "FINAL_DELIVERY"],
-                                      format_func=lambda x: STATUS_MAP.get(x, x), key="t3_status")
-        with _t3c2:
-            _t3_accts = st.multiselect("계정", account_names, default=account_names, key="t3_acct")
+        _t3_accts = st.multiselect("계정", account_names, default=account_names, key="t3_acct")
 
-        _t3_data = _filter_status(_all_orders, _t3_status)
+        _t3_data = _filter_status(_all_orders, "DEPARTURE")
         if not _t3_data.empty and _t3_accts:
             _t3_data = _t3_data[_t3_data["계정"].isin(_t3_accts)]
 
         _t3_total = _t3_data["묶음배송번호"].nunique() if not _t3_data.empty else 0
-        st.metric(f"{STATUS_MAP.get(_t3_status, _t3_status)} 주문", f"{_t3_total:,}건")
+        _t3_amount = int(_t3_data["결제금액"].sum()) if not _t3_data.empty else 0
+        _t3k1, _t3k2 = st.columns(2)
+        _t3k1.metric("배송지시 주문", f"{_t3_total:,}건")
+        _t3k2.metric("총 금액", f"₩{fmt_krw_short(_t3_amount)}")
 
         if _t3_data.empty:
-            st.info(f"{STATUS_MAP.get(_t3_status, _t3_status)} 상태의 주문이 없습니다.")
+            st.info("배송지시(DEPARTURE) 상태의 주문이 없습니다.")
         else:
             _t3_display = _t3_data.copy()
             _t3_display["상품/옵션/수량"] = _t3_display.apply(
@@ -397,6 +395,14 @@ def render(selected_account, accounts_df, account_names):
             gb3.configure_column("상품/옵션/수량", width=350)
             gb3.configure_column("배송지", width=250)
             AgGrid(_t3_grid, gridOptions=gb3.build(), height=500, theme="streamlit", key="t3_grid")
+
+            st.divider()
+
+            # 발주서 (배송지시 기준)
+            _render_purchase_order(_t3_data, accounts_df, key_prefix="t3")
+
+            # 극동 엑셀 (배송지시 기준)
+            _render_geukdong_excel(_t3_data, accounts_df, key_prefix="t3")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -484,8 +490,8 @@ def _render_cancel_section(accounts_df, account_names, _accept_all, _instruct_li
                         st.error("WING API 클라이언트를 생성할 수 없습니다.")
 
 
-def _render_purchase_order(instruct_all, accounts_df):
-    """2-2. 발주서 생성 (INSTRUCT 기준)"""
+def _render_purchase_order(instruct_all, accounts_df, key_prefix="t2"):
+    """발주서 생성"""
     import re as _re
 
     _dist_orders = instruct_all.copy()
@@ -588,7 +594,7 @@ def _render_purchase_order(instruct_all, accounts_df):
         _store_name = st.text_input(
             "가게명 (발주서 첫 줄에 표시)",
             value=st.session_state.get("order_store_name", "잉글리쉬존"),
-            key="t2_store_name",
+            key=f"{key_prefix}_store_name",
             help="예: 잉글리쉬존, 북마트"
         )
         st.session_state["order_store_name"] = _store_name
@@ -648,7 +654,7 @@ def _render_purchase_order(instruct_all, accounts_df):
             _xl_buf.getvalue(),
             file_name=f"쿠팡{_file_date}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="t2_dist_xlsx_dl",
+            key=f"{key_prefix}_dist_xlsx_dl",
             type="primary",
             use_container_width=True,
         )
@@ -656,7 +662,7 @@ def _render_purchase_order(instruct_all, accounts_df):
         _dist_names_sorted = _dist_summary["거래처"].tolist()
         _dist_filter = st.multiselect(
             "거래처 필터", _dist_names_sorted,
-            default=_dist_names_sorted, key="t2_dist_filter",
+            default=_dist_names_sorted, key=f"{key_prefix}_dist_filter",
         )
         _filtered_agg = _agg[_agg["거래처"].isin(_dist_filter)] if _dist_filter else _agg
         _show_agg = _filtered_agg[["거래처", "ISBN", "출판사", "도서명", "주문수량"]].copy()
@@ -666,14 +672,14 @@ def _render_purchase_order(instruct_all, accounts_df):
         gb2.configure_default_column(resizable=True, sorteable=True, filterable=True)
         gb2.configure_column("도서명", width=350)
         gb2.configure_column("주문수량", width=80)
-        AgGrid(_show_agg, gridOptions=gb2.build(), height=500, theme="streamlit", key="t2_dist_grid")
+        AgGrid(_show_agg, gridOptions=gb2.build(), height=500, theme="streamlit", key=f"{key_prefix}_dist_grid")
 
 
-def _render_geukdong_excel(instruct_all, accounts_df):
-    """2-3. 극동 엑셀 (INSTRUCT 기준)"""
+def _render_geukdong_excel(instruct_all, accounts_df, key_prefix="t2"):
+    """극동 엑셀"""
     with st.expander("📦 극동 엑셀", expanded=False):
         if instruct_all.empty:
-            st.info("상품준비중 주문이 없습니다.")
+            st.info("대상 주문이 없습니다.")
             return
 
         _gk_orders = instruct_all.copy()
@@ -794,7 +800,7 @@ def _render_geukdong_excel(instruct_all, accounts_df):
             _gk_buf.getvalue(),
             file_name=f"극동_{date.today().strftime('%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="t2_gk_xlsx_dl",
+            key=f"{key_prefix}_gk_xlsx_dl",
             type="primary",
             use_container_width=True,
         )
