@@ -344,11 +344,16 @@ def _render_detail(sel, account_id, account_name, _wing_client):
                     _img_url = _first.get("url", _first) if isinstance(_first, dict) else _first
         except Exception:
             pass
+        # URL이 상대경로면 CDN 프리픽스 추가
+        if _img_url and isinstance(_img_url, str) and not _img_url.startswith("http"):
+            _img_url = f"https://thumbnail7.coupangcdn.com/thumbnails/remote/292x292ex/{_img_url}"
         if _img_url and isinstance(_img_url, str) and _img_url.startswith("http"):
             st.image(_img_url, width=180)
         elif _img_url and isinstance(_img_url, dict):
             _real_url = _img_url.get("url") or _img_url.get("imageUrl") or _img_url.get("cdnPath") or ""
             if _real_url and isinstance(_real_url, str):
+                if not _real_url.startswith("http"):
+                    _real_url = f"https://thumbnail7.coupangcdn.com/thumbnails/remote/292x292ex/{_real_url}"
                 st.image(_real_url, width=180)
         else:
             st.markdown('<div style="width:180px;height:240px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:8px;color:#bbb;font-size:48px;">📖</div>', unsafe_allow_html=True)

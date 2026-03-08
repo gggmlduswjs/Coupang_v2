@@ -350,7 +350,9 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
                             _img_url = _imgs[0]
                 except Exception:
                     pass
-                if _img_url:
+                if _img_url and isinstance(_img_url, str):
+                    if not _img_url.startswith("http"):
+                        _img_url = f"https://thumbnail7.coupangcdn.com/thumbnails/remote/292x292ex/{_img_url}"
                     st.image(_img_url, width=180)
                 else:
                     st.markdown('<div style="width:180px;height:240px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:8px;color:#bbb;font-size:48px;">📖</div>', unsafe_allow_html=True)
