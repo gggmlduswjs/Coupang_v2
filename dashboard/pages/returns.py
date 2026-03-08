@@ -387,11 +387,13 @@ def render(selected_account, accounts_df, account_names):
                 # ── 배송 운송장 (한진택배 입력용) ──
                 if _orig_invoice:
                     st.success(f"**배송 운송장: {_orig_company} {_orig_invoice}**")
-                    oi1, oi2 = st.columns(2)
+                    oi1, oi2, oi3 = st.columns([2, 2, 1])
                     with oi1:
                         st.write(f"**수취인:** {_receiver_name} / {_receiver_phone}")
                     with oi2:
                         st.write(f"**주문자:** {_orderer_name} / {_orderer_phone}")
+                    with oi3:
+                        st.link_button("한진 반품접수", "https://focus.hanjin.com/track/numbertrack", type="primary")
 
                 # ── 상세 정보 ──
                 with st.expander(f"상세 — 접수번호 {_receipt_id}", expanded=True):
