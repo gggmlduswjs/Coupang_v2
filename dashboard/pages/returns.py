@@ -273,8 +273,8 @@ def render(selected_account, accounts_df, account_names):
                 r.return_delivery_type as 회수종류,
                 CASE WHEN r.pre_refund THEN 'Y' ELSE 'N' END as 선환불,
                 r.reason_code_text as 사유코드설명,
-                r.return_items_json as 아이템JSON,
-                r.return_delivery_json as 회수송장JSON
+                r.return_items_json as items_json,
+                r.return_delivery_json as delivery_json
             {_base_filtered}
             ORDER BY r.created_at_api DESC
             LIMIT 500
@@ -304,7 +304,7 @@ def render(selected_account, accounts_df, account_names):
                 except Exception:
                     return ""
 
-            _list["상품명"] = _list["아이템JSON"].apply(_extract_item_names)
+            _list["상품명"] = _list["items_json"].apply(_extract_item_names)
 
             # 그리드 표시 컬럼 선택
             _display_cols = [
@@ -349,9 +349,9 @@ def render(selected_account, accounts_df, account_names):
                         st.write(f"**비고:** {_detail_row['비고']}")
 
                     # 반품 아이템 상세
-                    if _detail_row.get("아이템JSON"):
+                    if _detail_row.get("items_json"):
                         try:
-                            items = json.loads(_detail_row["아이템JSON"]) if isinstance(_detail_row["아이템JSON"], str) else _detail_row["아이템JSON"]
+                            items = json.loads(_detail_row["items_json"]) if isinstance(_detail_row["items_json"], str) else _detail_row["items_json"]
                             if items:
                                 st.write("**반품 아이템:**")
                                 item_rows = []
@@ -369,9 +369,9 @@ def render(selected_account, accounts_df, account_names):
                             pass
 
                     # 회수 송장 정보
-                    if _detail_row.get("회수송장JSON"):
+                    if _detail_row.get("delivery_json"):
                         try:
-                            dtos = json.loads(_detail_row["회수송장JSON"]) if isinstance(_detail_row["회수송장JSON"], str) else _detail_row["회수송장JSON"]
+                            dtos = json.loads(_detail_row["delivery_json"]) if isinstance(_detail_row["delivery_json"], str) else _detail_row["delivery_json"]
                             valid_dtos = [d for d in (dtos or []) if d.get("deliveryInvoiceNo")]
                             if valid_dtos:
                                 st.write("**회수 송장:**")
