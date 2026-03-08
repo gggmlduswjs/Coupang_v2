@@ -931,106 +931,18 @@ def _render_delivery_list(instruct_all):
 
 
 def _render_hanjin_nfocus():
-    """2-5. 한진 N-Focus 송장 발급"""
+    """2-5. 한진 N-Focus 바로가기"""
     with st.expander("🚚 한진 N-Focus 송장 발급", expanded=False):
-        st.caption("배송리스트 엑셀을 업로드하면 N-Focus에서 송장을 자동 발급합니다.")
-
-        _hanjin_creds = _load_hanjin_creds()
-        if not _hanjin_creds.get("user_id"):
-            _hj_id = st.text_input("N-Focus 아이디", key="t2_hanjin_id")
-            _hj_pw = st.text_input("N-Focus 비밀번호", type="password", key="t2_hanjin_pw")
-            if st.button("저장", key="t2_hanjin_save"):
-                if _hj_id and _hj_pw:
-                    _save_hanjin_creds(_hj_id, _hj_pw)
-                    st.success("한진 크레덴셜 저장 완료")
-                    st.rerun()
-                else:
-                    st.warning("아이디와 비밀번호를 모두 입력하세요.")
-        else:
-            st.info(f"N-Focus 계정: {_hanjin_creds['user_id']}")
-            if st.button("크레덴셜 변경", key="t2_hanjin_change"):
-                st.session_state["_hanjin_edit"] = True
-
-            if st.session_state.get("_hanjin_edit"):
-                _hj_id = st.text_input("N-Focus 아이디", value=_hanjin_creds.get("user_id", ""), key="t2_hanjin_id_edit")
-                _hj_pw = st.text_input("N-Focus 비밀번호", type="password", key="t2_hanjin_pw_edit")
-                if st.button("변경 저장", key="t2_hanjin_save_edit"):
-                    if _hj_id and _hj_pw:
-                        _save_hanjin_creds(_hj_id, _hj_pw)
-                        st.session_state["_hanjin_edit"] = False
-                        st.success("한진 크레덴셜 업데이트 완료")
-                        st.rerun()
-
-        _nfocus_file = st.file_uploader(
-            "배송리스트 엑셀 (배송리스트 다운로드에서 받은 파일)",
-            type=["xlsx", "xls"],
-            key="t2_nfocus_upload",
-        )
-
-        _nfocus_disabled = (
-            not _hanjin_creds.get("user_id")
-            or _nfocus_file is None
-        )
-
-        if st.session_state.get("nfocus_running", False):
-            st.warning("이전 N-Focus 처리가 비정상 종료됨 — 상태 초기화됨")
-            st.session_state["nfocus_running"] = False
-
-        if st.button(
-            "한진 N-Focus 자동 처리",
-            key="t2_btn_nfocus",
-            type="primary",
-            disabled=_nfocus_disabled,
-            use_container_width=True,
-        ):
-            st.session_state["nfocus_running"] = True
-            try:
-                from operations.hanjin_nfocus import HanjinNFocusClient
-
-                _hc = _load_hanjin_creds()
-                _ss_placeholder = st.empty()
-                with st.status("N-Focus 처리 중...", expanded=True) as status:
-                    def _show_screenshot(img_bytes):
-                        _ss_placeholder.image(img_bytes, caption="N-Focus 실시간 화면", use_container_width=True)
-
-                    with HanjinNFocusClient(
-                        user_id=_hc["user_id"],
-                        password=_hc["password"],
-                        headless=True,
-                    ) as client:
-                        _nf_result = client.process_full_workflow(
-                            excel_bytes=_nfocus_file.getvalue(),
-                            filename=_nfocus_file.name,
-                            progress_callback=lambda msg: st.write(msg),
-                            screenshot_callback=_show_screenshot,
-                        )
-
-                    if _nf_result["success"]:
-                        status.update(label="N-Focus 처리 완료!", state="complete")
-                        st.success(
-                            f"정상 출력: {_nf_result['registered']}건"
-                            + (f" / 오류: {_nf_result['error']}건" if _nf_result["error"] else "")
-                        )
-                        if _nf_result["error_details"]:
-                            with st.expander("오류 상세"):
-                                for _err in _nf_result["error_details"]:
-                                    st.warning(_err)
-                        if _nf_result["invoice_excel"]:
-                            st.download_button(
-                                "운송장 엑셀 다운로드",
-                                _nf_result["invoice_excel"],
-                                file_name=f"Invoice_{date.today().isoformat()}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key="t2_dl_nfocus_invoice",
-                            )
-                    else:
-                        status.update(label="N-Focus 처리 실패", state="error")
-            except ImportError:
-                st.error("playwright 미설치. `pip install playwright && playwright install chromium`")
-            except Exception as e:
-                st.error(f"N-Focus 오류: {e}")
-            finally:
-                st.session_state["nfocus_running"] = False
+        st.caption("배송리스트 엑셀을 한진 N-Focus에 업로드하여 송장을 발급하세요.")
+        st.markdown("""
+**순서:**
+1. 위 '배송리스트 다운로드'에서 엑셀 다운로드
+2. 아래 링크에서 N-Focus 접속 → 출력자료등록 → 엑셀 업로드 → 오류체크 → 출력
+3. 출력자료등록 엑셀 다운로드
+4. 아래 '쿠팡 송장 등록'에서 해당 엑셀 업로드 → 자동 매칭 → 쿠팡 등록
+        """)
+        st.link_button("한진 N-Focus 접속", "https://focus.hanjin.com/login", type="primary", use_container_width=True)
+        st.link_button("한진 N-Focus 출력자료등록", "https://focus.hanjin.com/release/listup", use_container_width=True)
 
 
 def _render_invoice_upload(instruct_all, accounts_df):
