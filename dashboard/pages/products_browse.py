@@ -1,5 +1,7 @@
 """상품조회 페이지 — 전체 대시보드 + 계정별 테이블 + 불일치/누락 관리"""
 import logging
+import re
+import time
 import json as _json
 
 import pandas as pd
@@ -8,9 +10,10 @@ from st_aggrid import AgGrid, GridOptionsBuilder
 
 from dashboard.utils import (
     query_df, query_df_cached, run_sql, create_wing_client,
-    fmt_money_df, fmt_krw, CoupangWingError,
+    fmt_money_df, fmt_krw, CoupangWingError, engine,
 )
 from core.constants import COUPANG_FEE_RATE, DEFAULT_SHIPPING_COST
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -566,13 +569,6 @@ def _render_mismatch(accounts_df, account_names):
                l.sale_price as 판매가,
                COALESCE(l.original_price, 0) as 정가,
                l.coupang_status as 상태,
-               CASE
-                   WHEN l.vendor_item_id IS NULL OR l.vendor_item_id = 0 THEN 'VID 없음'
-                   WHEN l.sale_price IS NULL OR l.sale_price = 0 THEN '판매가 없음'
-                   WHEN l.original_price IS NULL OR l.original_price = 0 THEN '정가 없음'
-                   WHEN l.isbn IS NULL OR l.isbn = '' THEN 'ISBN 없음'
-                   WHEN l.product_name IS NULL OR l.product_name = '' THEN '상품명 없음'
-               END as 누락항목,
                l.id as _lid, a.id as _aid
         FROM listings l
         JOIN accounts a ON l.account_id = a.id
@@ -588,8 +584,257 @@ def _render_mismatch(accounts_df, account_names):
         ORDER BY a.account_name, l.product_name
     """)
 
+    # 누락 항목 컬럼 생성 (여러 항목 동시 누락 가능)
     if not missing.empty:
-        st.warning(f"{len(missing)}건의 필수 정보 누락")
+        def _get_missing_items(row):
+            items = []
+            vid = row.get("VID", "")
+            if not vid or vid == "0":
+                items.append("VID")
+            if not row.get("판매가") or int(row.get("판매가", 0) or 0) == 0:
+                items.append("판매가")
+            if not row.get("정가") or int(row.get("정가", 0) or 0) == 0:
+                items.append("정가")
+            isbn = row.get("ISBN", "")
+            if not isbn or (isinstance(isbn, float) and pd.isna(isbn)):
+                items.append("ISBN")
+            name = row.get("상품명", "")
+            if not name or name == "(미등록)":
+                items.append("상품명")
+            return ", ".join(items) if items else "-"
+        missing["누락항목"] = missing.apply(_get_missing_items, axis=1)
+
+    if not missing.empty:
+        # ── 누락 유형별 집계 ──
+        _vid_cnt = len(missing[missing["누락항목"].str.contains("VID")])
+        _sp_cnt = len(missing[missing["누락항목"].str.contains("판매가")])
+        _op_cnt = len(missing[missing["누락항목"].str.contains("정가")])
+        _isbn_cnt = len(missing[missing["누락항목"].str.contains("ISBN")])
+        _name_cnt = len(missing[missing["누락항목"].str.contains("상품명")])
+        _has_cpid = len(missing[missing["쿠팡ID"] != "-"])
+
+        mk1, mk2, mk3, mk4, mk5, mk6 = st.columns(6)
+        mk1.metric("전체 누락", f"{len(missing)}건")
+        mk2.metric("VID 없음", f"{_vid_cnt}건")
+        mk3.metric("판매가 없음", f"{_sp_cnt}건")
+        mk4.metric("정가 없음", f"{_op_cnt}건")
+        mk5.metric("ISBN 없음", f"{_isbn_cnt}건")
+        mk6.metric("쿠팡ID 있음", f"{_has_cpid}건", help="WING API로 자동 채우기 가능")
+
+        # ═══════════════════════════════════════════════
+        # 일괄 자동 채우기
+        # ═══════════════════════════════════════════════
+        st.markdown("##### 일괄 자동 채우기")
+        st.caption("쿠팡ID가 있는 상품은 WING API에서 VID/ISBN/가격/상품명을 자동으로 가져옵니다. ISBN만 없는 상품은 books 테이블에서 제목 매칭으로 채웁니다.")
+
+        _af1, _af2 = st.columns([1, 1])
+        with _af1:
+            _auto_scope = st.radio(
+                "범위", ["전체", "VID 없음만", "ISBN 없음만"],
+                horizontal=True, key="mm_auto_scope"
+            )
+        with _af2:
+            _auto_api_sync = st.checkbox(
+                "WING API 가격도 수정 (판매가/정가 변경 시)",
+                value=False, key="mm_auto_api_sync",
+                help="체크하면 DB뿐 아니라 쿠팡에도 가격 반영"
+            )
+
+        _btn_auto = st.button(
+            f"자동 채우기 실행 ({_has_cpid}건 API 조회)",
+            type="primary", key="mm_btn_autofill",
+            disabled=(_has_cpid == 0 and _isbn_cnt == 0),
+        )
+
+        if _btn_auto:
+            _isbn_re = re.compile(r'97[89]\d{10}')
+            _prog = st.progress(0, text="준비 중...")
+            _result_box = st.container()
+            _ok, _fail, _skip, _api_ok = 0, 0, 0, 0
+            _details = []  # 결과 로그
+
+            # 범위 필터링
+            _targets = missing.copy()
+            if _auto_scope == "VID 없음만":
+                _targets = _targets[_targets["누락항목"].str.contains("VID")]
+            elif _auto_scope == "ISBN 없음만":
+                _targets = _targets[_targets["누락항목"].str.contains("ISBN")]
+
+            total = len(_targets)
+            if total == 0:
+                st.info("대상 상품이 없습니다.")
+            else:
+                # WING 클라이언트 캐시 (계정별)
+                _client_cache = {}
+
+                def _get_client(acct_name):
+                    if acct_name in _client_cache:
+                        return _client_cache[acct_name]
+                    _m = accounts_df["account_name"] == acct_name
+                    if not _m.any():
+                        _client_cache[acct_name] = None
+                        return None
+                    c = create_wing_client(accounts_df[_m].iloc[0])
+                    _client_cache[acct_name] = c
+                    return c
+
+                for _i, (_, row) in enumerate(_targets.iterrows()):
+                    _prog.progress((_i + 1) / total, text=f"[{_i+1}/{total}] {str(row.get('상품명', ''))[:30]}...")
+
+                    lid = int(row["_lid"])
+                    acct_name = row["계정"]
+                    cpid = str(row.get("쿠팡ID", "-") or "-")
+                    cur_vid = str(row.get("VID", "") or "")
+                    cur_isbn = str(row.get("ISBN", "") or "")
+                    cur_sp = int(row.get("판매가", 0) or 0)
+                    cur_op = int(row.get("정가", 0) or 0)
+                    cur_name = str(row.get("상품명", "") or "")
+
+                    updates = {}  # DB 업데이트할 필드
+                    api_updates = {}  # WING API 업데이트할 필드
+
+                    # ── 전략 1: WING API get_product() ──
+                    if cpid and cpid != "-":
+                        client = _get_client(acct_name)
+                        if client:
+                            try:
+                                detail = client.get_product(int(cpid))
+                                data = detail.get("data", {})
+                                if isinstance(data, dict):
+                                    items = data.get("items", [])
+                                    if items:
+                                        item = items[0]
+
+                                        # VID
+                                        api_vid = item.get("vendorItemId")
+                                        if api_vid and (not cur_vid or cur_vid == "0"):
+                                            updates["vendor_item_id"] = int(api_vid)
+
+                                        # ISBN (barcode → externalVendorSku → searchTags)
+                                        if not cur_isbn or (isinstance(cur_isbn, float) and pd.isna(cur_isbn)):
+                                            _isbn_found = ""
+                                            for field in ["barcode", "externalVendorSku"]:
+                                                m = _isbn_re.search(str(item.get(field, "")))
+                                                if m:
+                                                    _isbn_found = m.group()
+                                                    break
+                                            if not _isbn_found:
+                                                for tag in (item.get("searchTags") or []):
+                                                    m = _isbn_re.search(str(tag))
+                                                    if m:
+                                                        _isbn_found = m.group()
+                                                        break
+                                            if _isbn_found:
+                                                updates["isbn"] = _isbn_found
+
+                                        # 판매가
+                                        api_sp = item.get("salePrice")
+                                        if api_sp and isinstance(api_sp, (int, float)) and int(api_sp) > 0 and cur_sp == 0:
+                                            updates["sale_price"] = int(api_sp)
+
+                                        # 정가 (originalPrice)
+                                        api_op = item.get("originalPrice")
+                                        if api_op and isinstance(api_op, (int, float)) and int(api_op) > 0 and cur_op == 0:
+                                            updates["original_price"] = int(api_op)
+
+                                        # 상품명
+                                        api_name = data.get("sellerProductName", "")
+                                        if api_name and (not cur_name or cur_name == "(미등록)"):
+                                            updates["product_name"] = api_name
+
+                                time.sleep(0.12)  # rate limit
+                            except CoupangWingError as e:
+                                _details.append({"계정": acct_name, "상품명": cur_name[:30], "결과": f"API 오류: {e.message[:40]}"})
+                                _fail += 1
+                                continue
+                            except Exception as e:
+                                _details.append({"계정": acct_name, "상품명": cur_name[:30], "결과": f"오류: {str(e)[:40]}"})
+                                _fail += 1
+                                continue
+
+                    # ── 전략 2: books 테이블 제목 매칭 (ISBN만 없을 때) ──
+                    if "isbn" not in updates and (not cur_isbn or (isinstance(cur_isbn, float) and pd.isna(cur_isbn))):
+                        _clean_name = cur_name
+                        if _clean_name and _clean_name != "(미등록)" and len(_clean_name) >= 5:
+                            _clean = re.sub(r'\[[^\]]*\]', '', _clean_name)
+                            _clean = re.sub(r'\([^)]*\)', '', _clean)
+                            _clean = re.sub(r'\d{4}년?', '', _clean)
+                            _clean = re.sub(r'세트\d*', '', _clean)
+                            _clean = ' '.join(_clean.split()).strip().lower()
+                            if len(_clean) >= 5:
+                                _kw = _clean[:40]
+                                _book_match = query_df_cached(
+                                    "SELECT isbn FROM books WHERE LOWER(title) LIKE :kw AND isbn IS NOT NULL LIMIT 1",
+                                    {"kw": f"%{_kw}%"}
+                                )
+                                if not _book_match.empty:
+                                    updates["isbn"] = str(_book_match.iloc[0]["isbn"])
+
+                    # ── DB 업데이트 ──
+                    if updates:
+                        try:
+                            _set_parts = []
+                            _params = {"id": lid}
+                            for k, v in updates.items():
+                                _set_parts.append(f"{k}=:{k}")
+                                _params[k] = v
+                            run_sql(f"UPDATE listings SET {', '.join(_set_parts)} WHERE id=:id", _params)
+
+                            # ── WING API 가격 수정 (옵션) ──
+                            if _auto_api_sync:
+                                _vid_for_api = updates.get("vendor_item_id") or (int(cur_vid) if cur_vid and cur_vid.isdigit() else 0)
+                                if _vid_for_api and _vid_for_api > 0:
+                                    _c = _get_client(acct_name)
+                                    if _c:
+                                        _new_sp = updates.get("sale_price")
+                                        _new_op = updates.get("original_price")
+                                        if _new_sp and _new_sp > 0:
+                                            try:
+                                                _c.update_price(int(_vid_for_api), _new_sp, dashboard_override=True)
+                                                _api_ok += 1
+                                            except Exception:
+                                                pass
+                                        if _new_op and _new_op > 0:
+                                            try:
+                                                _c.update_original_price(int(_vid_for_api), _new_op, dashboard_override=True)
+                                                _api_ok += 1
+                                            except Exception:
+                                                pass
+
+                            _ok += 1
+                            _filled = ", ".join(f"{k}={v}" for k, v in updates.items())
+                            _details.append({"계정": acct_name, "상품명": cur_name[:30], "결과": f"채움: {_filled[:60]}"})
+                        except Exception as e:
+                            _fail += 1
+                            _details.append({"계정": acct_name, "상품명": cur_name[:30], "결과": f"DB 오류: {str(e)[:40]}"})
+                    else:
+                        _skip += 1
+
+                _prog.progress(1.0, text="완료!")
+
+                with _result_box:
+                    st.success(f"자동 채우기 완료: 성공 {_ok}건, 실패 {_fail}건, 변경없음 {_skip}건"
+                               + (f", API 가격수정 {_api_ok}건" if _api_ok > 0 else ""))
+                    if _details:
+                        _detail_df = pd.DataFrame(_details)
+                        # 채운 것과 실패한 것 분리
+                        _filled_df = _detail_df[_detail_df["결과"].str.startswith("채움")]
+                        _error_df = _detail_df[~_detail_df["결과"].str.startswith("채움") & (_detail_df["결과"] != "")]
+                        if not _filled_df.empty:
+                            with st.expander(f"채움 상세 ({len(_filled_df)}건)"):
+                                st.dataframe(_filled_df, use_container_width=True, hide_index=True)
+                        if not _error_df.empty:
+                            with st.expander(f"오류 상세 ({len(_error_df)}건)"):
+                                st.dataframe(_error_df, use_container_width=True, hide_index=True)
+
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
+
+        st.divider()
+
+        # ── 누락 목록 테이블 + 단건 수정 ──
+        st.markdown("##### 누락 목록")
         _ms_display = missing[["계정", "상품명", "누락항목", "판매가", "정가", "ISBN", "쿠팡ID", "VID", "상태"]].copy()
         _sl = {"active": "판매중", "paused": "판매중지", "pending": "대기", "sold_out": "품절", "rejected": "반려"}
         _ms_display["상태"] = _ms_display["상태"].map(_sl).fillna(_ms_display["상태"])
@@ -597,6 +842,7 @@ def _render_mismatch(accounts_df, account_names):
         gb_ms = GridOptionsBuilder.from_dataframe(_ms_display)
         gb_ms.configure_selection(selection_mode="single", use_checkbox=False)
         gb_ms.configure_column("상품명", minWidth=200)
+        gb_ms.configure_column("누락항목", minWidth=120)
         gb_ms.configure_grid_options(domLayout="normal")
         ms_grid = AgGrid(
             _ms_display,
@@ -616,21 +862,69 @@ def _render_mismatch(accounts_df, account_names):
             ]
             if not _ms_match.empty:
                 _lid = int(_ms_match.iloc[0]["_lid"])
+                _acct_name = ms_sel.get("계정", "")
+                _cpid = str(ms_sel.get("쿠팡ID", "-") or "-")
+
                 st.divider()
-                st.markdown(f"**{ms_sel.get('계정', '')} — {ms_sel.get('상품명', '')}** (누락: {ms_sel.get('누락항목', '')})")
+                st.markdown(f"**{_acct_name} — {ms_sel.get('상품명', '')}** (누락: {ms_sel.get('누락항목', '')})")
+
+                # ── WING API 조회 버튼 ──
+                if _cpid and _cpid != "-":
+                    if st.button("WING API에서 정보 가져오기", key=f"mm_fetch_{_lid}"):
+                        _c = create_wing_client(accounts_df[accounts_df["account_name"] == _acct_name].iloc[0])
+                        if _c:
+                            try:
+                                _detail = _c.get_product(int(_cpid))
+                                _data = _detail.get("data", {})
+                                _items = _data.get("items", []) if isinstance(_data, dict) else []
+                                if _items:
+                                    _it = _items[0]
+                                    _fetched = {
+                                        "VID": _it.get("vendorItemId", ""),
+                                        "판매가": _it.get("salePrice", 0),
+                                        "정가": _it.get("originalPrice", 0),
+                                        "상품명": _data.get("sellerProductName", ""),
+                                    }
+                                    # ISBN 추출
+                                    _isbn_re2 = re.compile(r'97[89]\d{10}')
+                                    for _f in ["barcode", "externalVendorSku"]:
+                                        _m = _isbn_re2.search(str(_it.get(_f, "")))
+                                        if _m:
+                                            _fetched["ISBN"] = _m.group()
+                                            break
+                                    if "ISBN" not in _fetched:
+                                        for _tag in (_it.get("searchTags") or []):
+                                            _m = _isbn_re2.search(str(_tag))
+                                            if _m:
+                                                _fetched["ISBN"] = _m.group()
+                                                break
+                                    st.session_state[f"mm_fetched_{_lid}"] = _fetched
+                                    st.success(f"API 조회 성공: {_fetched}")
+                                else:
+                                    st.warning("상품에 items 정보가 없습니다.")
+                            except CoupangWingError as e:
+                                st.error(f"API 오류: {e.message}")
+                            except Exception as e:
+                                st.error(f"조회 실패: {e}")
+
+                # 기존 값 또는 API에서 가져온 값으로 폼 초기화
+                _fetched = st.session_state.get(f"mm_fetched_{_lid}", {})
+
                 with st.form(f"mm_fix_{_lid}"):
                     mf1, mf2, mf3 = st.columns(3)
                     with mf1:
-                        fix_name = st.text_input("상품명", value=ms_sel.get("상품명", "") or "")
+                        fix_name = st.text_input("상품명", value=_fetched.get("상품명") or ms_sel.get("상품명", "") or "")
                     with mf2:
-                        fix_sp = st.number_input("판매가", value=int(ms_sel.get("판매가", 0) or 0), step=100)
+                        fix_sp = st.number_input("판매가", value=int(_fetched.get("판매가") or ms_sel.get("판매가", 0) or 0), step=100)
                     with mf3:
-                        fix_op = st.number_input("정가", value=int(ms_sel.get("정가", 0) or 0), step=100)
+                        fix_op = st.number_input("정가", value=int(_fetched.get("정가") or ms_sel.get("정가", 0) or 0), step=100)
                     mf4, mf5 = st.columns(2)
                     with mf4:
-                        fix_isbn = st.text_input("ISBN", value=ms_sel.get("ISBN", "") or "")
+                        fix_isbn = st.text_input("ISBN", value=str(_fetched.get("ISBN", "") or ms_sel.get("ISBN", "") or ""))
                     with mf5:
-                        fix_vid = st.text_input("VID", value=ms_sel.get("VID", "") or "")
+                        fix_vid = st.text_input("VID", value=str(_fetched.get("VID", "") or ms_sel.get("VID", "") or ""))
+
+                    _fix_api = st.checkbox("WING API에도 가격 반영", value=bool(_fetched), key=f"mm_fix_api_{_lid}")
 
                     if st.form_submit_button("저장", type="primary"):
                         try:
@@ -648,12 +942,36 @@ def _render_mismatch(accounts_df, account_names):
                             if fix_isbn:
                                 _update_parts.append("isbn=:isbn")
                                 _params["isbn"] = fix_isbn
-                            if fix_vid:
+                            if fix_vid and fix_vid.isdigit():
                                 _update_parts.append("vendor_item_id=:vid")
-                                _params["vid"] = int(fix_vid) if fix_vid.isdigit() else fix_vid
+                                _params["vid"] = int(fix_vid)
                             if _update_parts:
                                 run_sql(f"UPDATE listings SET {', '.join(_update_parts)} WHERE id=:id", _params)
+
+                                # WING API 가격 반영
+                                if _fix_api:
+                                    _api_vid = int(fix_vid) if fix_vid and fix_vid.isdigit() else 0
+                                    if _api_vid > 0:
+                                        _c = create_wing_client(accounts_df[accounts_df["account_name"] == _acct_name].iloc[0])
+                                        if _c:
+                                            _api_msgs = []
+                                            if fix_sp > 0:
+                                                try:
+                                                    _c.update_price(_api_vid, fix_sp, dashboard_override=True)
+                                                    _api_msgs.append("판매가 OK")
+                                                except CoupangWingError as e:
+                                                    _api_msgs.append(f"판매가 실패: {e.message[:30]}")
+                                            if fix_op > 0:
+                                                try:
+                                                    _c.update_original_price(_api_vid, fix_op, dashboard_override=True)
+                                                    _api_msgs.append("정가 OK")
+                                                except CoupangWingError as e:
+                                                    _api_msgs.append(f"정가 실패: {e.message[:30]}")
+                                            if _api_msgs:
+                                                st.info(f"API: {', '.join(_api_msgs)}")
+
                                 st.success("저장 완료")
+                                st.session_state.pop(f"mm_fetched_{_lid}", None)
                                 st.cache_data.clear()
                                 st.rerun()
                             else:
