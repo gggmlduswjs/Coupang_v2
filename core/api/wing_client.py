@@ -1358,6 +1358,154 @@ class CoupangWingClient:
         return self._request("POST", path, data=data)
 
     # ─────────────────────────────────────────────
+    # CS (고객문의)
+    # ─────────────────────────────────────────────
+
+    def get_online_inquiries(self, date_from: str, date_to: str,
+                              answered_type: str = "ALL",
+                              page_num: int = 1, page_size: int = 50) -> Dict[str, Any]:
+        """
+        상품별 고객문의 조회 (최대 7일)
+
+        Args:
+            date_from: 시작일 (YYYY-MM-DD)
+            date_to: 종료일 (YYYY-MM-DD)
+            answered_type: ALL / ANSWERED / NOANSWER
+            page_num: 페이지 번호
+            page_size: 페이지 크기 (최대 50)
+        """
+        path = f"/v2/providers/openapi/apis/api/v5/vendors/{self.vendor_id}/onlineInquiries"
+        params = {
+            "vendorId": self.vendor_id,
+            "inquiryStartAt": date_from,
+            "inquiryEndAt": date_to,
+            "answeredType": answered_type,
+            "pageNum": str(page_num),
+            "pageSize": str(page_size),
+        }
+        return self._request("GET", path, params=params)
+
+    def get_all_online_inquiries(self, date_from: str, date_to: str,
+                                   answered_type: str = "ALL") -> List[Dict]:
+        """상품별 고객문의 전체 조회 (자동 페이징)"""
+        all_items: List[Dict] = []
+        page = 1
+        while True:
+            result = self.get_online_inquiries(date_from, date_to, answered_type, page, 50)
+            data = result.get("data", {})
+            items = data.get("content", [])
+            all_items.extend(items)
+            pagination = data.get("pagination", {})
+            total_pages = pagination.get("totalPages", 1)
+            if page >= total_pages:
+                break
+            page += 1
+        return all_items
+
+    def reply_online_inquiry(self, inquiry_id: int, content: str,
+                               reply_by: str) -> Dict[str, Any]:
+        """
+        상품별 고객문의 답변
+
+        Args:
+            inquiry_id: 문의 ID
+            content: 답변 내용
+            reply_by: 응답자 WING ID
+        """
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/onlineInquiries/{inquiry_id}/replies"
+        data = {
+            "content": content,
+            "vendorId": self.vendor_id,
+            "replyBy": reply_by,
+        }
+        return self._request("POST", path, data=data)
+
+    def get_callcenter_inquiries(self, date_from: str = None, date_to: str = None,
+                                   status: str = "NONE",
+                                   vendor_item_id: str = None,
+                                   page_num: int = 1, page_size: int = 30) -> Dict[str, Any]:
+        """
+        쿠팡 고객센터 문의 조회 (최대 7일)
+
+        Args:
+            date_from: 시작일 (YYYY-MM-DD)
+            date_to: 종료일 (YYYY-MM-DD)
+            status: NONE(전체) / ANSWER / NO_ANSWER / TRANSFER
+            vendor_item_id: 옵션 ID (선택)
+            page_num: 페이지 번호
+            page_size: 페이지 크기 (최대 30)
+        """
+        path = f"/v2/providers/openapi/apis/api/v5/vendors/{self.vendor_id}/callCenterInquiries"
+        params = {
+            "vendorId": self.vendor_id,
+            "partnerCounselingStatus": status,
+            "pageNum": str(page_num),
+            "pageSize": str(page_size),
+        }
+        if date_from:
+            params["inquiryStartAt"] = date_from
+        if date_to:
+            params["inquiryEndAt"] = date_to
+        if vendor_item_id:
+            params["vendorItemId"] = vendor_item_id
+        return self._request("GET", path, params=params)
+
+    def get_all_callcenter_inquiries(self, date_from: str, date_to: str,
+                                       status: str = "NONE") -> List[Dict]:
+        """쿠팡 고객센터 문의 전체 조회 (자동 페이징)"""
+        all_items: List[Dict] = []
+        page = 1
+        while True:
+            result = self.get_callcenter_inquiries(date_from, date_to, status, None, page, 30)
+            data = result.get("data", {})
+            items = data.get("content", [])
+            all_items.extend(items)
+            pagination = data.get("pagination", {})
+            total_pages = pagination.get("totalPages", 1)
+            if page >= total_pages:
+                break
+            page += 1
+        return all_items
+
+    def get_callcenter_inquiry(self, inquiry_id: int) -> Dict[str, Any]:
+        """쿠팡 고객센터 문의 단건 조회"""
+        path = f"/v2/providers/openapi/apis/api/v5/vendors/callCenterInquiries/{inquiry_id}"
+        return self._request("GET", path)
+
+    def reply_callcenter_inquiry(self, inquiry_id: int, content: str,
+                                   reply_by: str, parent_answer_id: int) -> Dict[str, Any]:
+        """
+        쿠팡 고객센터 문의 답변
+
+        Args:
+            inquiry_id: 상담번호
+            content: 답변 내용 (2~1000자)
+            reply_by: 실사용자 WING ID
+            parent_answer_id: 부모이관글 answerId
+        """
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/callCenterInquiries/{inquiry_id}/replies"
+        data = {
+            "vendorId": self.vendor_id,
+            "inquiryId": str(inquiry_id),
+            "content": content,
+            "replyBy": reply_by,
+            "parentAnswerId": str(parent_answer_id),
+        }
+        return self._request("POST", path, data=data)
+
+    def confirm_callcenter_inquiry(self, inquiry_id: int, confirm_by: str) -> Dict[str, Any]:
+        """
+        쿠팡 고객센터 문의 확인 (미확인/TRANSFER 상태)
+
+        Args:
+            inquiry_id: 상담번호
+            confirm_by: 실사용자 WING ID
+        """
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/callCenterInquiries/{inquiry_id}/confirms"
+        data = {"confirmBy": confirm_by}
+        return self._request("POST", path, data=data)
+
+    # ─────────────────────────────────────────────
     # 연결 테스트
     # ─────────────────────────────────────────────
 
