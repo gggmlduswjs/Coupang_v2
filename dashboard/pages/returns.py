@@ -179,8 +179,60 @@ def _load_returns_live(accounts_df, days: int = 30):
 
 def _clear_return_cache():
     for k in ["_returns_live_cache", "_returns_live_ts",
-              "_exchange_live_cache", "_exchange_live_ts"]:
+              "_exchange_live_cache", "_exchange_live_ts",
+              "_invoice_cache"]:
         st.session_state.pop(k, None)
+
+
+def _fetch_invoices_for_pending(pending_df, accounts_df):
+    """미처리 건들의 배송 운송장을 병렬 조회 후 session_state에 캐시."""
+    if pending_df.empty:
+        return
+    cache = st.session_state.setdefault("_invoice_cache", {})
+
+    # 이미 캐시된 건 제외
+    to_fetch = []
+    for idx, row in pending_df.iterrows():
+        items = row.get("_return_items", [])
+        sbid = items[0].get("shipmentBoxId") if items else None
+        if sbid and str(sbid) not in cache:
+            to_fetch.append((row["계정"], int(sbid)))
+
+    if not to_fetch:
+        return
+
+    # 계정별 client 매핑
+    _clients = {}
+    for _, acct in accounts_df.iterrows():
+        c = create_wing_client(acct)
+        if c:
+            _clients[acct["account_name"]] = c
+
+    def _fetch_one(acct_name, sbid):
+        client = _clients.get(acct_name)
+        if not client:
+            return str(sbid), {}
+        try:
+            result = client.get_ordersheet_by_shipment(sbid)
+            od = result.get("data", {})
+            receiver = od.get("receiver", {})
+            orderer = od.get("orderer", {})
+            return str(sbid), {
+                "invoice": od.get("invoiceNumber", ""),
+                "company": od.get("deliveryCompanyName", ""),
+                "receiver_name": receiver.get("name", ""),
+                "receiver_phone": receiver.get("safeNumber", ""),
+                "orderer_name": orderer.get("name", ""),
+                "orderer_phone": orderer.get("safeNumber", ""),
+            }
+        except Exception:
+            return str(sbid), {}
+
+    with ThreadPoolExecutor(max_workers=min(len(to_fetch), 10)) as pool:
+        futures = [pool.submit(_fetch_one, acct, sbid) for acct, sbid in to_fetch]
+        for f in as_completed(futures):
+            sbid_str, info = f.result()
+            cache[sbid_str] = info
 
 
 # ─────────────────────────────────────────────
@@ -334,7 +386,6 @@ def render(selected_account, accounts_df, account_names):
     # 탭1: 미처리 (반품접수 + 출고중지 + 승인대기)
     # ══════════════════════════════════════════════
     with tab1:
-        # 미처리 = 반품접수 + 출고중지 + 승인대기 합침
         _actionable = _all[_all["_receipt_status"].isin([
             "RELEASE_STOP_UNCHECKED", "RETURNS_UNCHECKED", "VENDOR_WAREHOUSE_CONFIRM",
         ])] if not _all.empty else pd.DataFrame()
@@ -342,159 +393,194 @@ def render(selected_account, accounts_df, account_names):
         if _actionable.empty:
             st.info("미처리 반품 건이 없습니다.")
         else:
+            # 미처리 건 운송장 미리 병렬 조회 (캐시)
+            _fetch_invoices_for_pending(_actionable, accounts_df)
+            _inv_cache = st.session_state.get("_invoice_cache", {})
+
+            # 운송장번호를 테이블에 추가
+            def _get_invoice(row):
+                items = row.get("_return_items", [])
+                sbid = str(items[0].get("shipmentBoxId", "")) if items else ""
+                info = _inv_cache.get(sbid, {})
+                return info.get("invoice", "")
+
+            _actionable = _actionable.copy()
+            _actionable["운송장번호"] = _actionable.apply(_get_invoice, axis=1)
+
             _act_cols = [
                 "계정", "접수번호", "주문번호", "유형", "상태", "접수일",
-                "상품명", "사유분류", "수량", "귀책", "요청자", "회수종류", "선환불",
+                "상품명", "수량", "귀책", "운송장번호",
             ]
             _act_show = _actionable[[c for c in _act_cols if c in _actionable.columns]].reset_index(drop=True)
+
+            # 다건 선택 가능
             _act_evt = st.dataframe(
                 _act_show, use_container_width=True, hide_index=True, height=400,
-                selection_mode="single-row", on_select="rerun", key="ret_action_table",
+                selection_mode="multi-row", on_select="rerun", key="ret_action_table",
             )
             _act_sel = _act_evt.selection.rows if _act_evt and _act_evt.selection else []
 
             if _act_sel:
-                _row = _actionable.iloc[_act_sel[0]]
-                _receipt_id = _row["접수번호"]
-                _status = _row["_receipt_status"]
+                _selected_rows = [_actionable.iloc[i] for i in _act_sel]
 
-                # ── 주문 상세 조회 (운송장번호) ──
-                _acct, _client = _client_for(_row["계정"])
-                _orig_invoice = ""
-                _orig_company = ""
-                _receiver_name = ""
-                _receiver_phone = ""
-                _orderer_name = ""
-                _orderer_phone = ""
-                if _client:
+                # ── 단건 선택: 상세 + 운송장 정보 ──
+                if len(_act_sel) == 1:
+                    _row = _selected_rows[0]
+                    _receipt_id = _row["접수번호"]
+                    _status = _row["_receipt_status"]
+
+                    # 캐시에서 운송장 정보
                     _return_items = _row.get("_return_items", [])
-                    _sbid = _return_items[0].get("shipmentBoxId") if _return_items else None
-                    if _sbid:
-                        try:
-                            _order_detail = _client.get_ordersheet_by_shipment(int(_sbid))
-                            _od = _order_detail.get("data", {})
-                            _orig_invoice = _od.get("invoiceNumber", "")
-                            _orig_company = _od.get("deliveryCompanyName", "")
-                            _receiver = _od.get("receiver", {})
-                            _receiver_name = _receiver.get("name", "")
-                            _receiver_phone = _receiver.get("safeNumber", "")
-                            _orderer = _od.get("orderer", {})
-                            _orderer_name = _orderer.get("name", "")
-                            _orderer_phone = _orderer.get("safeNumber", "")
-                        except Exception:
-                            pass
+                    _sbid = str(_return_items[0].get("shipmentBoxId", "")) if _return_items else ""
+                    _inv_info = _inv_cache.get(_sbid, {})
 
-                # ── 배송 운송장 (한진택배 입력용) ──
-                if _orig_invoice:
-                    st.success(f"**배송 운송장: {_orig_company} {_orig_invoice}**")
-                    oi1, oi2, oi3 = st.columns([2, 2, 1])
-                    with oi1:
-                        st.write(f"**수취인:** {_receiver_name} / {_receiver_phone}")
-                    with oi2:
-                        st.write(f"**주문자:** {_orderer_name} / {_orderer_phone}")
-                    with oi3:
-                        st.link_button("한진 반품접수", "https://focus.hanjin.com/track/numbertrack", type="primary")
+                    if _inv_info.get("invoice"):
+                        st.success(f"**배송 운송장: {_inv_info['company']} {_inv_info['invoice']}**")
+                        oi1, oi2, oi3 = st.columns([2, 2, 1])
+                        with oi1:
+                            st.write(f"**수취인:** {_inv_info.get('receiver_name', '')} / {_inv_info.get('receiver_phone', '')}")
+                        with oi2:
+                            st.write(f"**주문자:** {_inv_info.get('orderer_name', '')} / {_inv_info.get('orderer_phone', '')}")
+                        with oi3:
+                            st.link_button("한진 반품접수", "https://focus.hanjin.com/track/numbertrack", type="primary")
 
-                # ── 상세 정보 ──
-                with st.expander(f"상세 — 접수번호 {_receipt_id}", expanded=True):
-                    dc1, dc2, dc3 = st.columns(3)
-                    dc1.write(f"**주문번호:** {_row['주문번호']}")
-                    dc1.write(f"**유형:** {_row['유형']}")
-                    dc1.write(f"**상태:** {_row['상태']}")
-                    dc2.write(f"**요청자:** {_row['요청자']}")
-                    dc2.write(f"**귀책:** {_row['귀책']}")
-                    dc2.write(f"**선환불:** {_row['선환불']}")
-                    dc3.write(f"**출고중지상태:** {_row.get('출고중지상태', '-')}")
-                    dc3.write(f"**회수종류:** {_row.get('회수종류', '-')}")
-                    dc3.write(f"**계정:** {_row['계정']}")
+                    with st.expander(f"상세 — 접수번호 {_receipt_id}", expanded=True):
+                        dc1, dc2, dc3 = st.columns(3)
+                        dc1.write(f"**주문번호:** {_row['주문번호']}")
+                        dc1.write(f"**유형:** {_row['유형']}")
+                        dc1.write(f"**상태:** {_row['상태']}")
+                        dc2.write(f"**요청자:** {_row['요청자']}")
+                        dc2.write(f"**귀책:** {_row['귀책']}")
+                        dc2.write(f"**선환불:** {_row['선환불']}")
+                        dc3.write(f"**출고중지상태:** {_row.get('출고중지상태', '-')}")
+                        dc3.write(f"**회수종류:** {_row.get('회수종류', '-')}")
+                        dc3.write(f"**계정:** {_row['계정']}")
 
-                    st.write(f"**사유:** {_row.get('사유분류', '')} > {_row.get('사유상세', '')} | {_row.get('사유코드', '')}")
-                    if _row.get("비고"):
-                        st.write(f"**비고:** {_row['비고']}")
+                        st.write(f"**사유:** {_row.get('사유분류', '')} > {_row.get('사유상세', '')} | {_row.get('사유코드', '')}")
+                        if _row.get("비고"):
+                            st.write(f"**비고:** {_row['비고']}")
 
-                    items = _row.get("_return_items", [])
-                    if items:
-                        st.write("**반품 아이템:**")
-                        item_rows = []
-                        for ri in items:
-                            item_rows.append({
-                                "상품명": ri.get("sellerProductName", ""),
-                                "옵션명": ri.get("vendorItemName", ""),
-                                "옵션ID": ri.get("vendorItemId", ""),
-                                "주문수량": ri.get("purchaseCount", 0),
-                                "취소수량": ri.get("cancelCount", 0),
-                                "출고상태": _RELEASE_STATUS_MAP.get(ri.get("releaseStatus", ""), ri.get("releaseStatus", "")),
-                            })
-                        st.dataframe(pd.DataFrame(item_rows), use_container_width=True, hide_index=True)
+                    st.divider()
 
-                st.divider()
+                    # 처리 액션
+                    _acct, _client = _client_for(_row["계정"])
 
-                # ── 처리 액션 (상태에 따라) ──
+                    if _status == "RETURNS_UNCHECKED":
+                        act1, act2 = st.columns(2)
+                        with act1:
+                            st.markdown("**입고 확인**")
+                            if st.button("입고 확인 처리", type="primary", key="btn_confirm"):
+                                if _client:
+                                    try:
+                                        _client.confirm_return_receipt(int(_receipt_id))
+                                        st.success(f"입고 확인 완료: {_receipt_id}")
+                                        _clear_return_cache()
+                                    except CoupangWingError as e:
+                                        st.error(f"API 오류: {e}")
+                                else:
+                                    st.error("WING API 클라이언트 생성 불가")
+                        with act2:
+                            st.markdown("**회수 송장 등록**")
+                            _sel_company = st.selectbox(
+                                "택배사", list(_DELIVERY_COMPANIES.keys()),
+                                format_func=lambda x: f"{_DELIVERY_COMPANIES[x]} ({x})",
+                                key="sel_inv_company",
+                                index=list(_DELIVERY_COMPANIES.keys()).index("HANJIN"),
+                            )
+                            _inv_num = st.text_input("운송장번호", key="inv_number")
+                            if st.button("회수 송장 등록", type="secondary", key="btn_create_invoice"):
+                                if not _inv_num.strip():
+                                    st.error("운송장번호를 입력하세요.")
+                                elif _client:
+                                    try:
+                                        _client.create_return_invoice(
+                                            receipt_id=int(_receipt_id),
+                                            delivery_company_code=_sel_company,
+                                            invoice_number=_inv_num.strip(),
+                                            delivery_type="RETURN",
+                                        )
+                                        st.success(f"회수 송장 등록 완료: {_DELIVERY_COMPANIES.get(_sel_company, _sel_company)} {_inv_num}")
+                                        _clear_return_cache()
+                                    except CoupangWingError as e:
+                                        st.error(f"API 오류: {e}")
+                                else:
+                                    st.error("WING API 클라이언트 생성 불가")
 
-                # 반품접수 → 입고확인 + 회수송장
-                if _status == "RETURNS_UNCHECKED":
-                    act1, act2 = st.columns(2)
-                    with act1:
-                        st.markdown("**입고 확인**")
-                        if st.button("입고 확인 처리", type="primary", key="btn_confirm"):
+                    elif _status == "VENDOR_WAREHOUSE_CONFIRM":
+                        st.markdown("**반품 승인 (환불)**")
+                        st.caption("빠른환불 대상은 자동 처리됩니다.")
+                        if st.button("반품 승인", type="primary", key="btn_approve"):
                             if _client:
                                 try:
-                                    _client.confirm_return_receipt(int(_receipt_id))
-                                    st.success(f"입고 확인 완료: {_receipt_id}")
+                                    _cancel_count = int(_row["수량"]) if pd.notna(_row["수량"]) and int(_row["수량"]) > 0 else 1
+                                    _client.approve_return_request(int(_receipt_id), cancel_count=_cancel_count)
+                                    st.success(f"반품 승인 완료: {_receipt_id}")
                                     _clear_return_cache()
                                 except CoupangWingError as e:
                                     st.error(f"API 오류: {e}")
                             else:
                                 st.error("WING API 클라이언트 생성 불가")
 
-                    with act2:
-                        st.markdown("**회수 송장 등록**")
-                        _sel_company = st.selectbox(
-                            "택배사", list(_DELIVERY_COMPANIES.keys()),
-                            format_func=lambda x: f"{_DELIVERY_COMPANIES[x]} ({x})",
-                            key="sel_inv_company",
-                            index=list(_DELIVERY_COMPANIES.keys()).index("HANJIN"),
-                        )
-                        _inv_num = st.text_input("운송장번호", key="inv_number")
-                        if st.button("회수 송장 등록", type="secondary", key="btn_create_invoice"):
-                            if not _inv_num.strip():
-                                st.error("운송장번호를 입력하세요.")
-                            elif _client:
-                                try:
-                                    _client.create_return_invoice(
-                                        receipt_id=int(_receipt_id),
-                                        delivery_company_code=_sel_company,
-                                        invoice_number=_inv_num.strip(),
-                                        delivery_type="RETURN",
-                                    )
-                                    st.success(f"회수 송장 등록 완료: {_DELIVERY_COMPANIES.get(_sel_company, _sel_company)} {_inv_num}")
-                                    _clear_return_cache()
-                                except CoupangWingError as e:
-                                    st.error(f"API 오류: {e}")
-                            else:
-                                st.error("WING API 클라이언트 생성 불가")
+                    elif _status == "RELEASE_STOP_UNCHECKED":
+                        st.warning(f"출고중지 요청 건입니다. 출고중지상태: {_row.get('출고중지상태', '-')}")
 
-                # 승인대기 → 반품 승인
-                elif _status == "VENDOR_WAREHOUSE_CONFIRM":
-                    st.markdown("**반품 승인 (환불)**")
-                    st.caption("빠른환불 대상은 자동 처리됩니다.")
-                    if st.button("반품 승인", type="primary", key="btn_approve"):
-                        if _client:
-                            try:
-                                _cancel_count = int(_row["수량"]) if pd.notna(_row["수량"]) and int(_row["수량"]) > 0 else 1
-                                _client.approve_return_request(int(_receipt_id), cancel_count=_cancel_count)
-                                st.success(f"반품 승인 완료: {_receipt_id}")
+                # ── 다건 선택: 일괄 처리 ──
+                else:
+                    st.info(f"**{len(_act_sel)}건 선택됨**")
+
+                    # 선택 건 요약
+                    _sel_df = pd.DataFrame([{
+                        "접수번호": r["접수번호"],
+                        "상태": r["상태"],
+                        "상품명": str(r["상품명"])[:40],
+                        "계정": r["계정"],
+                        "운송장번호": r.get("운송장번호", ""),
+                    } for r in _selected_rows])
+                    st.dataframe(_sel_df, use_container_width=True, hide_index=True)
+
+                    # 상태별 분류
+                    _unchecked_rows = [r for r in _selected_rows if r["_receipt_status"] == "RETURNS_UNCHECKED"]
+                    _confirm_rows = [r for r in _selected_rows if r["_receipt_status"] == "VENDOR_WAREHOUSE_CONFIRM"]
+
+                    bc1, bc2 = st.columns(2)
+                    with bc1:
+                        if _unchecked_rows:
+                            if st.button(f"일괄 입고확인 ({len(_unchecked_rows)}건)", type="primary", key="btn_batch_confirm"):
+                                _ok, _fail = 0, 0
+                                for r in _unchecked_rows:
+                                    _a, _c = _client_for(r["계정"])
+                                    if _c:
+                                        try:
+                                            _c.confirm_return_receipt(int(r["접수번호"]))
+                                            _ok += 1
+                                        except Exception:
+                                            _fail += 1
+                                    else:
+                                        _fail += 1
+                                st.success(f"입고확인 완료: {_ok}건" + (f" / 실패: {_fail}건" if _fail else ""))
                                 _clear_return_cache()
-                            except CoupangWingError as e:
-                                st.error(f"API 오류: {e}")
-                        else:
-                            st.error("WING API 클라이언트 생성 불가")
 
-                # 출고중지 요청
-                elif _status == "RELEASE_STOP_UNCHECKED":
-                    st.warning(f"출고중지 요청 건입니다. 출고중지상태: {_row.get('출고중지상태', '-')}")
+                    with bc2:
+                        if _confirm_rows:
+                            if st.button(f"일괄 반품승인 ({len(_confirm_rows)}건)", type="primary", key="btn_batch_approve"):
+                                _ok, _fail = 0, 0
+                                for r in _confirm_rows:
+                                    _a, _c = _client_for(r["계정"])
+                                    if _c:
+                                        try:
+                                            _cnt = int(r["수량"]) if pd.notna(r["수량"]) and int(r["수량"]) > 0 else 1
+                                            _c.approve_return_request(int(r["접수번호"]), cancel_count=_cnt)
+                                            _ok += 1
+                                        except Exception:
+                                            _fail += 1
+                                    else:
+                                        _fail += 1
+                                st.success(f"반품승인 완료: {_ok}건" + (f" / 실패: {_fail}건" if _fail else ""))
+                                _clear_return_cache()
+
+                    st.link_button("한진 반품접수", "https://focus.hanjin.com/track/numbertrack", type="primary")
             else:
-                st.caption("테이블에서 처리할 건을 선택하세요.")
+                st.caption("테이블에서 처리할 건을 선택하세요. (다건 선택 가능)")
 
     # ══════════════════════════════════════════════
     # 탭2: 전체 내역
