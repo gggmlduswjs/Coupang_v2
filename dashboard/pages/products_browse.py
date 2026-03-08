@@ -337,9 +337,11 @@ def _render_detail(sel, account_id, account_name, _wing_client):
                 if isinstance(_imgs, str) and _imgs.strip():
                     _imgs_list = _json.loads(_imgs) if _imgs.startswith("[") else []
                     if _imgs_list:
-                        _img_url = _imgs_list[0]
+                        _first = _imgs_list[0]
+                        _img_url = _first.get("url", _first) if isinstance(_first, dict) else _first
                 elif isinstance(_imgs, list) and _imgs:
-                    _img_url = _imgs[0]
+                    _first = _imgs[0]
+                    _img_url = _first.get("url", _first) if isinstance(_first, dict) else _first
         except Exception:
             pass
         if _img_url:
