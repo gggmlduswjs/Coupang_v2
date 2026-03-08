@@ -426,11 +426,13 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
                             _inv_info = _wing_client.get_item_inventory(int(_sel_vid))
                             _inv_data = _inv_info.get("data", _inv_info)
                             st.markdown("#### 가격/재고/판매상태")
-                            _ri1, _ri2, _ri3, _ri4 = st.columns(4)
-                            _ri1.metric("쿠팡 판매가", f"{_inv_data.get('salePrice', '-'):,}원" if isinstance(_inv_data.get('salePrice'), int) else str(_inv_data.get('salePrice', '-')))
-                            _ri2.metric("기준가", f"{_inv_data.get('originalPrice', '-'):,}원" if isinstance(_inv_data.get('originalPrice'), int) else str(_inv_data.get('originalPrice', '-')))
-                            _ri3.metric("재고", str(_inv_data.get('quantity', _inv_data.get('maximumBuyCount', '-'))))
-                            _ri4.metric("판매상태", str(_inv_data.get('salesStatus', _inv_data.get('status', '-'))))
+                            _ri1, _ri2, _ri3 = st.columns(3)
+                            _sale_p = _inv_data.get('salePrice')
+                            _ri1.metric("쿠팡 판매가", f"{_sale_p:,}원" if isinstance(_sale_p, (int, float)) else str(_sale_p or '-'))
+                            _stock = _inv_data.get('amountInStock', _inv_data.get('quantity', _inv_data.get('maximumBuyCount')))
+                            _ri2.metric("재고", f"{_stock:,}" if isinstance(_stock, (int, float)) else str(_stock or '-'))
+                            _on_sale = _inv_data.get('onSale', _inv_data.get('salesStatus', _inv_data.get('status')))
+                            _ri3.metric("판매상태", "판매중" if _on_sale is True else "중지" if _on_sale is False else str(_on_sale or '-'))
                         except Exception:
                             pass
 
