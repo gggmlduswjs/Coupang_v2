@@ -2,7 +2,7 @@
 주문/배송 통합 페이지
 ====================
 탭1: 결제완료 (ACCEPT) → 발주확인
-탭2: 상품준비중 (INSTRUCT) → 발주서/극동/배송리스트/한진/송장등록
+탭2: 상품준비중 (INSTRUCT) → 배송리스트/한진/송장등록
 탭3: 배송지시 (DEPARTURE) → 발주서/극동 다운로드
 """
 import io
@@ -345,13 +345,7 @@ def render(selected_account, accounts_df, account_names):
 
             st.divider()
 
-            # 2-2. 발주서 생성
-            _render_purchase_order(_t2_filtered, accounts_df)
-
-            # 2-3. 극동 엑셀
-            _render_geukdong_excel(_t2_filtered, accounts_df)
-
-            # 2-4. 배송리스트 다운로드
+            # 2-2. 배송리스트 다운로드
             _render_delivery_list(_t2_filtered)
 
             # 2-5. 한진 N-Focus 송장 발급
