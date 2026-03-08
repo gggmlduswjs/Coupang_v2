@@ -1,5 +1,8 @@
 """상품 관리 — Tab 1: 상품 목록"""
+import json as _json
 import logging
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder
@@ -10,6 +13,59 @@ from dashboard.utils import (
 from core.constants import COUPANG_FEE_RATE, DEFAULT_SHIPPING_COST
 
 logger = logging.getLogger(__name__)
+
+
+def _save_product_detail_to_db(account_id: int, coupang_product_id: int, prod_data: dict):
+    """WING 상품 상세 응답을 listings 테이블에 저장"""
+    try:
+        items = prod_data.get("items", [])
+        first_item = items[0] if items else {}
+
+        # 검색어
+        search_tags = first_item.get("searchTags", [])
+        search_tags_str = ", ".join(str(t) for t in search_tags) if search_tags else ""
+
+        # 이미지 URL 목록
+        images_list = []
+        for img in first_item.get("images", []):
+            url = img.get("cdnPath", img.get("vendorPath", ""))
+            if url:
+                images_list.append(url)
+
+        # 구매옵션 / 검색옵션
+        purchase_opts = []
+        search_opts = []
+        for attr in first_item.get("attributes", []):
+            entry = {
+                "type": attr.get("attributeTypeName", ""),
+                "value": attr.get("attributeValueName", ""),
+            }
+            if attr.get("exposed") == "EXPOSED":
+                purchase_opts.append(entry)
+            else:
+                search_opts.append(entry)
+
+        run_sql("""
+            UPDATE listings
+            SET raw_json = :raw_json,
+                detail_synced_at = :synced_at,
+                search_tags = :search_tags,
+                images = :images,
+                purchase_options = :purchase_options,
+                search_options = :search_options
+            WHERE account_id = :aid AND coupang_product_id = :cpid
+        """, {
+            "raw_json": _json.dumps(prod_data, ensure_ascii=False),
+            "synced_at": datetime.utcnow().isoformat(),
+            "search_tags": search_tags_str,
+            "images": _json.dumps(images_list, ensure_ascii=False),
+            "purchase_options": _json.dumps(purchase_opts, ensure_ascii=False),
+            "search_options": _json.dumps(search_opts, ensure_ascii=False),
+            "aid": account_id,
+            "cpid": coupang_product_id,
+        })
+    except Exception as e:
+        logger.warning(f"상품 상세 DB 저장 실패 (SPID={coupang_product_id}): {e}")
 
 
 def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
@@ -285,7 +341,6 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
                         {"aid": account_id, "cid": str(sel["쿠팡ID"] or "")}
                     )
                     if not _img_row.empty:
-                        import json as _json
                         _imgs = _img_row.iloc[0]["images"]
                         if isinstance(_imgs, str) and _imgs.strip():
                             _imgs_list = _json.loads(_imgs) if _imgs.startswith("[") else []
@@ -378,6 +433,9 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
                             try:
                                 _prod = _wing_client.get_product(int(_sel_spid))
                                 _pd = _prod.get("data", _prod)
+
+                                # DB에 상세 데이터 저장
+                                _save_product_detail_to_db(account_id, int(_sel_spid), _pd)
 
                                 st.divider()
                                 st.markdown("#### 상품 상세")
