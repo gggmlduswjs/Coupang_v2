@@ -1193,8 +1193,8 @@ class CoupangWingClient:
             date_to: 종료일 (YYYY-MM-DD)
             status: 상태 필터 (RU/UC/CC/PR 등)
             cancel_type: 유형 필터 (CANCEL 등)
-            token: 페이징 토큰
-            max_per_page: 페이지당 건수 (기본 50)
+            token: 페이징 토큰 (timeFrame 모드에서는 무시)
+            max_per_page: 페이지당 건수 (timeFrame 모드에서는 무시)
 
         Returns:
             반품 목록 응답 (data, hasNext, nextToken)
@@ -1207,14 +1207,12 @@ class CoupangWingClient:
             "searchType": "timeFrame",
             "createdAtFrom": _from,
             "createdAtTo": _to,
-            "maxPerPage": str(max_per_page),
         }
         if status:
             params["status"] = status
         if cancel_type:
             params["cancelType"] = cancel_type
-        if token:
-            params["token"] = token
+        # timeFrame 모드에서는 nextToken/maxPerPage 미지원
         return self._request("GET", path, params=params)
 
     def get_all_return_requests(self, date_from: str, date_to: str,
