@@ -60,7 +60,7 @@ def _load_online_inquiries(accounts_df, answered_type="ALL"):
         return st.session_state[cache_key]
 
     _today = date.today()
-    _from = (_today - timedelta(days=7)).isoformat()
+    _from = (_today - timedelta(days=6)).isoformat()
     _to = _today.isoformat()
 
     acct_clients = []
@@ -142,7 +142,7 @@ def _load_callcenter_inquiries(accounts_df, status="NONE"):
         return st.session_state[cache_key]
 
     _today = date.today()
-    _from = (_today - timedelta(days=7)).isoformat()
+    _from = (_today - timedelta(days=6)).isoformat()
     _to = _today.isoformat()
 
     acct_clients = []

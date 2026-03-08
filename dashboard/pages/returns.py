@@ -244,7 +244,7 @@ def _load_exchanges_live(accounts_df):
         return st.session_state[cache_key]
 
     _today = date.today()
-    _date_from = (_today - timedelta(days=7)).isoformat()
+    _date_from = (_today - timedelta(days=6)).isoformat()
     _date_to = _today.isoformat()
 
     acct_clients = []
