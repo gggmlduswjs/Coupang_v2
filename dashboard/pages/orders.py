@@ -145,29 +145,32 @@ def render(selected_account, accounts_df, account_names):
                 key="tab1_accept_grid", update_mode="SELECTION_CHANGED",
             )
 
-            # 선택된 행 추출
+            # 선택된 행 추출 (선택 안 했으면 전체 사용)
             _selected_rows = _grid_result.get("selected_rows", None)
-            if _selected_rows is not None and not (isinstance(_selected_rows, pd.DataFrame) and _selected_rows.empty):
-                if isinstance(_selected_rows, list):
-                    _selected_df = pd.DataFrame(_selected_rows)
-                else:
+            _has_selection = False
+            if _selected_rows is not None:
+                if isinstance(_selected_rows, pd.DataFrame) and not _selected_rows.empty:
                     _selected_df = _selected_rows
-            else:
-                _selected_df = pd.DataFrame()
+                    _has_selection = True
+                elif isinstance(_selected_rows, list) and len(_selected_rows) > 0:
+                    _selected_df = pd.DataFrame(_selected_rows)
+                    _has_selection = True
 
-            _sel_count = len(_selected_df)
-            _sel_boxes = _selected_df["묶음배송번호"].nunique() if not _selected_df.empty else 0
-            st.info(f"선택: {_sel_count}건 ({_sel_boxes}묶음) / 전체: {len(_accept_display)}건 — 배송 불가 주문은 체크 해제 후 진행")
+            if _has_selection:
+                _sel_box_ids = _selected_df["묶음배송번호"].unique().tolist()
+                _sel_data = _t1_data[_t1_data["묶음배송번호"].isin(_sel_box_ids)].copy()
+                _sel_boxes = len(_sel_box_ids)
+                st.info(f"선택: {len(_selected_df)}건 ({_sel_boxes}묶음) / 전체: {len(_accept_display)}건 — 배송 불가 주문은 체크 해제")
+            else:
+                # 선택 없으면 전체 사용
+                _sel_data = _t1_data.copy()
+                _sel_boxes = _t1_data["묶음배송번호"].nunique() if not _t1_data.empty else 0
+                st.info(f"전체 {len(_accept_display)}건 ({_sel_boxes}묶음) — 체크박스로 배송 불가 주문 제외 가능")
 
             st.divider()
 
-            # ── 발주서 + 상품준비중 처리 (선택된 주문 기준) ──
-            if _selected_df.empty:
-                st.warning("선택된 주문이 없습니다.")
-            else:
-                # 선택된 묶음배송번호로 원본 데이터 필터
-                _sel_box_ids = _selected_df["묶음배송번호"].unique().tolist()
-                _sel_data = _t1_data[_t1_data["묶음배송번호"].isin(_sel_box_ids)].copy()
+            # ── 발주서 + 상품준비중 처리 ──
+            if True:
 
                 # 사은품/증정품 필터링 (발주서용)
                 _dist_orders = _sel_data.copy()
