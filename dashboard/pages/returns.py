@@ -394,7 +394,7 @@ def render(selected_account, accounts_df, account_names):
                         st.write(f"**주문자:** {_orderer_name} / {_orderer_phone}")
 
                 # ── 상세 정보 ──
-                with st.expander(f"상세 — 접수번호 {_receipt_id}", expanded=False):
+                with st.expander(f"상세 — 접수번호 {_receipt_id}", expanded=True):
                     dc1, dc2, dc3 = st.columns(3)
                     dc1.write(f"**주문번호:** {_row['주문번호']}")
                     dc1.write(f"**유형:** {_row['유형']}")
