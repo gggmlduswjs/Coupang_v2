@@ -124,6 +124,21 @@ def render(selected_account, accounts_df, account_names):
 
         st.divider()
 
+        # ── 발주확인 후 DeliveryList 다운로드 (rerun 후 표시) ──
+        if "_ack_delivery_excel" in st.session_state:
+            _ack_xl = st.session_state.pop("_ack_delivery_excel")
+            st.success(f"발주확인 완료 — DeliveryList 엑셀을 다운로드하세요.")
+            st.download_button(
+                f"📥 DeliveryList 다운로드 ({_ack_xl['count']}건)",
+                _ack_xl["data"],
+                file_name=_ack_xl["filename"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="t1_ack_dl",
+                type="primary",
+                use_container_width=True,
+            )
+            st.divider()
+
         if _t1_data.empty:
             st.info("결제완료(ACCEPT) 상태의 주문이 없습니다.")
         else:
@@ -241,6 +256,13 @@ def render(selected_account, accounts_df, account_names):
                         _total_fail += len(_ack_ids)
 
                 if _total_success > 0:
+                    # DeliveryList 엑셀 생성 (쿠팡 동일 40컬럼)
+                    _ack_xl_bytes = _build_delivery_excel(_sel_data)
+                    st.session_state["_ack_delivery_excel"] = {
+                        "data": _ack_xl_bytes,
+                        "count": len(_sel_data),
+                        "filename": f"DeliveryList({date.today().isoformat()}).xlsx",
+                    }
                     clear_order_caches()
                     st.rerun()
 
@@ -1196,3 +1218,69 @@ def _match_direct(inv_df, instruct_all, accounts_df):
         st.warning(f"매칭 안 된 주문: {len(_unmatched)}건 (이미 발송됐거나 취소된 주문)")
 
     return _matched if not _matched.empty else None
+
+
+def _build_delivery_excel(orders_df):
+    """쿠팡 표준 40컬럼 DeliveryList 엑셀 생성 (발주확인 시 다운로드용)"""
+    _rows = []
+    for _idx, (_i, _row) in enumerate(orders_df.iterrows(), 1):
+        _rows.append({
+            "번호": _idx,
+            "묶음배송번호": int(_row["묶음배송번호"]),
+            "주문번호": int(_row["주문번호"]),
+            "택배사": "한진택배",
+            "운송장번호": "",
+            "분리배송 Y/N": "분리배송가능" if _row.get("분리배송가능") else "분리배송불가",
+            "분리배송 출고예정일": "",
+            "주문시 출고예정일": _row.get("주문시출고예정일", ""),
+            "출고일(발송일)": "",
+            "주문일": _row.get("주문일시", _row.get("주문일", "")),
+            "등록상품명": str(_row.get("상품명") or ""),
+            "등록옵션명": _row.get("옵션명", ""),
+            "노출상품명(옵션명)": f"{_row.get('상품명', '')}, {_row.get('옵션명', '')}",
+            "노출상품ID": str(_row.get("_seller_product_id", "")),
+            "옵션ID": str(_row.get("_vendor_item_id", "")),
+            "최초등록등록상품명/옵션명": _row.get("최초등록상품옵션명", ""),
+            "업체상품코드": _row.get("업체상품코드", ""),
+            "바코드": "",
+            "결제액": int(_row.get("결제금액", 0)),
+            "배송비구분": _row.get("배송비구분", ""),
+            "배송비": _row.get("배송비", 0),
+            "도서산간 추가배송비": int(_row.get("도서산간추가배송비", 0)),
+            "구매수(수량)": int(_row.get("수량", 0)),
+            "옵션판매가(판매단가)": int(_row.get("판매단가", 0) or _row.get("결제금액", 0)),
+            "구매자": _row.get("구매자", ""),
+            "구매자전화번호": _row.get("구매자전화번호", ""),
+            "수취인이름": _row.get("수취인", ""),
+            "수취인전화번호": _row.get("수취인전화번호", ""),
+            "우편번호": _row.get("우편번호", ""),
+            "수취인 주소": _row.get("수취인주소", ""),
+            "배송메세지": _row.get("배송메세지", ""),
+            "상품별 추가메시지": "",
+            "주문자 추가메시지": "",
+            "배송완료일": "",
+            "구매확정일자": "",
+            "개인통관번호(PCCC)": _row.get("개인통관번호", ""),
+            "통관용수취인전화번호": _row.get("통관용전화번호", ""),
+            "기타": "",
+            "결제위치": _row.get("결제위치", ""),
+            "배송유형": "판매자 배송",
+        })
+
+    _df = pd.DataFrame(_rows)
+
+    _buf = io.BytesIO()
+    with pd.ExcelWriter(_buf, engine="openpyxl") as writer:
+        _df.to_excel(writer, sheet_name="Delivery", index=False)
+        ws = writer.sheets["Delivery"]
+        from openpyxl.utils import get_column_letter
+        for col_name in ["묶음배송번호", "주문번호", "노출상품ID", "옵션ID"]:
+            if col_name in _df.columns:
+                col_idx = _df.columns.get_loc(col_name)
+                col_letter = get_column_letter(col_idx + 1)
+                for row_idx in range(2, len(_df) + 2):
+                    cell = ws[f"{col_letter}{row_idx}"]
+                    cell.value = str(int(cell.value)) if cell.value is not None else ""
+                    cell.number_format = "@"
+    _buf.seek(0)
+    return _buf.getvalue()
