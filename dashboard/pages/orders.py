@@ -6,8 +6,6 @@
 """
 import io
 import logging
-import os
-import sys
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -26,13 +24,12 @@ from dashboard.utils import (
     query_df_cached,
 )
 from dashboard.services.order_data import (
-    load_all_orders_from_db,
+    load_all_orders_live,
     get_instruct_orders,
     get_instruct_by_box,
     clear_order_caches,
     fmt_krw_short,
     sync_live_orders,
-    can_call_api,
     STATUS_MAP,
 )
 logger = logging.getLogger(__name__)
@@ -42,23 +39,16 @@ def render(selected_account, accounts_df, account_names):
     st.title("주문 관리")
 
     # ── 상단 컨트롤 ──
-    _can_call = can_call_api()
     _top_c1, _top_c2 = st.columns([2, 5])
     with _top_c1:
-        if _can_call:
-            if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
-                         help="WING API에서 최근 7일 주문 즉시 조회", type="primary"):
-                try:
-                    with st.spinner("WING API 조회 중... (1~2분 소요)"):
-                        _synced = sync_live_orders(accounts_df)
-                    clear_order_caches()
-                    st.success(f"✅ 완료: {_synced}건 갱신")
-                except Exception as _e:
-                    st.error(f"❌ 동기화 실패: {_e}")
+        if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
+                     help="WING API에서 실시간 주문 조회", type="primary"):
+            clear_order_caches()
+            st.rerun()
     with _top_c2:
         _last_synced = st.session_state.get("order_last_synced")
         if _last_synced:
-            st.caption(f"마지막 동기화: {_last_synced} | 10분마다 자동 동기화")
+            st.caption(f"마지막 조회: {_last_synced} (WING API 실시간)")
 
     _status_map = STATUS_MAP
 
@@ -66,7 +56,7 @@ def render(selected_account, accounts_df, account_names):
     _ord_date_from_str = (date.today() - timedelta(days=30)).isoformat()
 
     # ── DB에서 즉시 로드 (단일 쿼리, 30초 캐시) ──
-    _all_orders = load_all_orders_from_db()
+    _all_orders = load_all_orders_live(accounts_df)
 
     def _filter_status(df, status):
         if df.empty:
@@ -304,15 +294,11 @@ def render(selected_account, accounts_df, account_names):
             with _po_col1:
                 st.caption("INSTRUCT(상품준비중) 주문 기반 · 배송 처리하면 자동으로 사라짐")
             with _po_col2:
-                if can_call_api():
-                    if st.button("🔄 주문 새로고침", key="btn_po_sync", use_container_width=True, type="primary"):
-                        with st.spinner("INSTRUCT 주문 동기화 중..."):
-                            _synced = sync_live_orders(accounts_df)
-                        clear_order_caches()
-                        st.success(f"완료 — {_synced}건 갱신")
-                        st.rerun()
+                if st.button("🔄 주문 새로고침", key="btn_po_sync", use_container_width=True, type="primary"):
+                    clear_order_caches()
+                    st.rerun()
             with _po_col3:
-                st.caption("2시간마다 자동 동기화")
+                st.caption("WING API 실시간 조회")
 
             # 상품준비중(INSTRUCT)만 발주서 대상
             _dist_orders = _instruct_all.copy() if not _instruct_all.empty else pd.DataFrame()

@@ -14,13 +14,11 @@ from st_aggrid import AgGrid, GridOptionsBuilder
 
 from dashboard.utils import create_wing_client
 from dashboard.services.order_data import (
-    load_all_orders_from_db,
+    load_all_orders_live,
     get_instruct_orders,
     get_instruct_by_box,
     clear_order_caches,
     fmt_krw_short,
-    sync_live_orders,
-    can_call_api,
 )
 from dashboard.services.order_service import (
     load_hanjin_creds as _load_hanjin_creds,
@@ -33,29 +31,22 @@ logger = logging.getLogger(__name__)
 def render(selected_account, accounts_df, account_names):
     st.title("배송/송장 관리")
 
-    # ── 공유 데이터 로드 ──
-    _all_orders = load_all_orders_from_db()
+    # ── 공유 데이터 로드 (WING API 실시간) ──
+    _all_orders = load_all_orders_live(accounts_df)
     _instruct_all = get_instruct_orders(_all_orders)
     _inst_by_box = get_instruct_by_box(_instruct_all)
 
-    # ── 사이드바 동기화 버튼 ──
-    _can_call = can_call_api()
+    # ── 상단 컨트롤 ──
     _top_c1, _top_c2 = st.columns([2, 5])
     with _top_c1:
-        if _can_call:
-            if st.button("🔄 주문 새로고침", key="ship_btn_refresh", use_container_width=True,
-                         help="WING API에서 최근 7일 주문 즉시 조회", type="primary"):
-                try:
-                    with st.spinner("WING API 조회 중... (1~2분 소요)"):
-                        _synced = sync_live_orders(accounts_df)
-                    clear_order_caches()
-                    st.success(f"✅ 완료: {_synced}건 갱신")
-                except Exception as _e:
-                    st.error(f"❌ 동기화 실패: {_e}")
+        if st.button("🔄 주문 새로고침", key="ship_btn_refresh", use_container_width=True,
+                     help="WING API에서 실시간 주문 조회", type="primary"):
+            clear_order_caches()
+            st.rerun()
     with _top_c2:
         _last_synced = st.session_state.get("order_last_synced")
         if _last_synced:
-            st.caption(f"마지막 동기화: {_last_synced} | 10분마다 자동 동기화")
+            st.caption(f"마지막 조회: {_last_synced} (WING API 실시간)")
 
     st.caption("상품준비중 주문 배송 처리: 주문 확인 → 배송리스트 → 한진 송장 발급 → 쿠팡 송장 등록")
 
