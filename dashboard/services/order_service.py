@@ -20,7 +20,7 @@ _HANJIN_CREDS_PATH = Path(__file__).resolve().parents[2] / "hanjin_creds.json"
 
 
 def load_hanjin_creds() -> dict:
-    if _IS_LOCAL and _HANJIN_CREDS_PATH.exists():
+    if _HANJIN_CREDS_PATH.exists():
         try:
             return json.loads(_HANJIN_CREDS_PATH.read_text(encoding="utf-8"))
         except Exception:
