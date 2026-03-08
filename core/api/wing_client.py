@@ -1358,6 +1358,97 @@ class CoupangWingClient:
         return self._request("POST", path, data=data)
 
     # ─────────────────────────────────────────────
+    # 교환
+    # ─────────────────────────────────────────────
+
+    def get_exchange_requests(self, date_from: str, date_to: str,
+                               status: str = None, order_id: int = None,
+                               next_token: str = "", max_per_page: int = 50) -> Dict[str, Any]:
+        """
+        교환요청 목록 조회 (최대 7일)
+
+        Args:
+            date_from: 시작일 (YYYY-MM-DDTHH:mm:ss)
+            date_to: 종료일 (YYYY-MM-DDTHH:mm:ss)
+            status: RECEIPT/PROGRESS/SUCCESS/REJECT/CANCEL
+            order_id: 주문번호 (선택)
+            next_token: 페이징 토큰
+            max_per_page: 페이지당 건수 (기본 50)
+        """
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/exchangeRequests"
+        _from = date_from if "T" in date_from else f"{date_from}T00:00:00"
+        _to = date_to if "T" in date_to else f"{date_to}T23:59:59"
+        params = {
+            "createdAtFrom": _from,
+            "createdAtTo": _to,
+            "maxPerPage": str(max_per_page),
+        }
+        if status:
+            params["status"] = status
+        if order_id:
+            params["orderId"] = str(order_id)
+        if next_token:
+            params["nextToken"] = next_token
+        return self._request("GET", path, params=params)
+
+    def get_all_exchange_requests(self, date_from: str, date_to: str,
+                                    status: str = None) -> List[Dict]:
+        """교환요청 전체 조회 (자동 페이징)"""
+        return self._paginate(
+            fetch_fn=self.get_exchange_requests,
+            fetch_kwargs={
+                "date_from": date_from,
+                "date_to": date_to,
+                "status": status,
+            },
+            token_param="next_token",
+            log_label="교환 페이지",
+        )
+
+    def confirm_exchange_receipt(self, exchange_id: int) -> Dict[str, Any]:
+        """교환 입고 확인"""
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/exchangeRequests/{exchange_id}/receiveConfirmation"
+        data = {"exchangeId": exchange_id, "vendorId": self.vendor_id}
+        return self._request("PUT", path, data=data)
+
+    def reject_exchange_request(self, exchange_id: int, reject_code: str) -> Dict[str, Any]:
+        """
+        교환 거부 (SOLDOUT 또는 WITHDRAW)
+
+        Args:
+            exchange_id: 교환 접수번호
+            reject_code: SOLDOUT(매진) 또는 WITHDRAW(철회)
+        """
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/exchangeRequests/{exchange_id}/rejection"
+        data = {
+            "exchangeId": exchange_id,
+            "vendorId": self.vendor_id,
+            "exchangeRejectCode": reject_code,
+        }
+        return self._request("PUT", path, data=data)
+
+    def upload_exchange_invoice(self, exchange_id: int, shipment_box_id: int,
+                                  delivery_code: str, invoice_number: str) -> Dict[str, Any]:
+        """
+        교환상품 송장 업로드
+
+        Args:
+            exchange_id: 교환 접수번호
+            shipment_box_id: 재배송 배송번호 (입고확인 후 생성)
+            delivery_code: 택배사 코드
+            invoice_number: 운송장번호
+        """
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/exchangeRequests/{exchange_id}/invoices"
+        data = [{
+            "exchangeId": str(exchange_id),
+            "vendorId": self.vendor_id,
+            "shipmentBoxId": str(shipment_box_id),
+            "goodsDeliveryCode": delivery_code,
+            "invoiceNumber": invoice_number,
+        }]
+        return self._request("POST", path, data=data)
+
+    # ─────────────────────────────────────────────
     # CS (고객문의)
     # ─────────────────────────────────────────────
 
