@@ -344,8 +344,12 @@ def _render_detail(sel, account_id, account_name, _wing_client):
                     _img_url = _first.get("url", _first) if isinstance(_first, dict) else _first
         except Exception:
             pass
-        if _img_url:
+        if _img_url and isinstance(_img_url, str) and _img_url.startswith("http"):
             st.image(_img_url, width=180)
+        elif _img_url and isinstance(_img_url, dict):
+            _real_url = _img_url.get("url") or _img_url.get("imageUrl") or _img_url.get("cdnPath") or ""
+            if _real_url and isinstance(_real_url, str):
+                st.image(_real_url, width=180)
         else:
             st.markdown('<div style="width:180px;height:240px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:8px;color:#bbb;font-size:48px;">📖</div>', unsafe_allow_html=True)
     with pc2:
