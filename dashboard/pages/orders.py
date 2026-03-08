@@ -1060,11 +1060,52 @@ def _render_invoice_upload(instruct_all, accounts_df):
 
         st.success(f"매칭 완료: {len(_matched_df)}건")
 
-        if st.button(f"전체 송장 등록 ({len(_matched_df)}건)", key="t2_btn_bulk_invoice", type="primary"):
+        # ── 출고중지요청 체크 (쿠팡 공식 워크플로우 필수 단계) ──
+        _stop_orders, _safe_df = _check_stop_shipment_requests(_matched_df, accounts_df)
+
+        if not _stop_orders.empty:
+            st.warning(f"⚠️ 출고중지요청 {len(_stop_orders)}건 감지 — 해당 주문은 송장 등록에서 제외됩니다.")
+            with st.expander(f"출고중지요청 상세 ({len(_stop_orders)}건)", expanded=True):
+                _stop_display = _stop_orders[["계정", "주문번호", "묶음배송번호", "_receipt_id", "_cancel_count", "_cancel_reason"]].copy()
+                _stop_display.columns = ["계정", "주문번호", "묶음배송번호", "접수번호", "취소수량", "취소사유"]
+                st.dataframe(_stop_display, hide_index=True)
+
+                if st.button("출고중지완료 처리 (미출고 확인)", key="t2_btn_stop_shipment", type="secondary"):
+                    _stop_ok = 0
+                    _stop_fail = 0
+                    for _aid, _sg in _stop_orders.groupby("_account_id"):
+                        _aid = int(_aid)
+                        _acct_row = accounts_df[accounts_df["id"] == _aid]
+                        if _acct_row.empty:
+                            continue
+                        _acct_row = _acct_row.iloc[0]
+                        _client = create_wing_client(_acct_row)
+                        if not _client:
+                            continue
+                        for _, _sr in _sg.iterrows():
+                            try:
+                                _client.stop_shipment(int(_sr["_receipt_id"]), int(_sr["_cancel_count"]))
+                                _stop_ok += 1
+                            except Exception as e:
+                                _stop_fail += 1
+                                st.error(f"[{_acct_row['account_name']}] 접수번호 {_sr['_receipt_id']}: {e}")
+                    if _stop_ok > 0:
+                        st.success(f"출고중지완료 처리: {_stop_ok}건 성공" + (f", {_stop_fail}건 실패" if _stop_fail else ""))
+                        clear_order_caches()
+
+        if _safe_df.empty:
+            if not _stop_orders.empty:
+                st.info("출고중지 건을 제외하면 등록할 송장이 없습니다.")
+            return
+
+        if not _stop_orders.empty:
+            st.info(f"출고중지 제외 후 송장 등록 대상: {len(_safe_df)}건")
+
+        if st.button(f"전체 송장 등록 ({len(_safe_df)}건)", key="t2_btn_bulk_invoice", type="primary"):
             _total_success = 0
             _total_fail = 0
 
-            for _aid, _grp in _matched_df.groupby("_account_id"):
+            for _aid, _grp in _safe_df.groupby("_account_id"):
                 _aid = int(_aid)
                 _acct_row = accounts_df[accounts_df["id"] == _aid]
                 if _acct_row.empty:
@@ -1115,6 +1156,82 @@ def _render_invoice_upload(instruct_all, accounts_df):
                 st.rerun()
             elif _total_fail > 0:
                 st.error(f"전체 실패: {_total_fail}건")
+
+
+def _check_stop_shipment_requests(matched_df, accounts_df):
+    """송장 등록 전 출고중지요청(RU) 체크 — 해당 주문 분리 반환.
+
+    Returns:
+        (stop_orders_df, safe_df): 출고중지 대상 / 안전한 송장 등록 대상
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _today = date.today()
+    _from = (_today - timedelta(days=14)).isoformat()
+    _to = _today.isoformat()
+
+    # 계정별 출고중지요청 조회
+    _stop_order_ids = {}  # order_id → {receipt_id, cancel_count, cancel_reason, account_id}
+
+    def _fetch_stops(acct_row, client):
+        try:
+            reqs = client.get_all_return_requests(_from, _to, status="RU")
+            return acct_row, reqs
+        except Exception as e:
+            logger.warning(f"[{acct_row['account_name']}] 출고중지요청 조회 실패: {e}")
+            return acct_row, []
+
+    _acct_ids_in_matched = matched_df["_account_id"].astype(int).unique()
+    _tasks = []
+    for _aid in _acct_ids_in_matched:
+        _acct_row = accounts_df[accounts_df["id"] == int(_aid)]
+        if _acct_row.empty:
+            continue
+        _acct_row = _acct_row.iloc[0]
+        _client = create_wing_client(_acct_row)
+        if _client:
+            _tasks.append((_acct_row, _client))
+
+    if _tasks:
+        with ThreadPoolExecutor(max_workers=min(len(_tasks), 10)) as pool:
+            futures = [pool.submit(_fetch_stops, a, c) for a, c in _tasks]
+            for f in as_completed(futures):
+                acct_row, reqs = f.result()
+                for req in reqs:
+                    _oid = req.get("orderId")
+                    if _oid:
+                        _stop_order_ids[int(_oid)] = {
+                            "receipt_id": req.get("receiptId"),
+                            "cancel_count": req.get("cancelCountSum", 1),
+                            "cancel_reason": req.get("cancelReason", ""),
+                            "account_id": int(acct_row["id"]),
+                            "account_name": acct_row["account_name"],
+                        }
+
+    if not _stop_order_ids:
+        return pd.DataFrame(), matched_df
+
+    # 매칭된 주문 중 출고중지 대상 분리
+    _matched = matched_df.copy()
+    _matched["_oid_int"] = _matched["주문번호"].astype(int)
+    _is_stopped = _matched["_oid_int"].isin(_stop_order_ids.keys())
+
+    _stop_df = _matched[_is_stopped].copy()
+    _safe_df = _matched[~_is_stopped].copy()
+
+    # 출고중지 상세 정보 추가
+    if not _stop_df.empty:
+        _stop_df["_receipt_id"] = _stop_df["_oid_int"].map(lambda x: _stop_order_ids.get(x, {}).get("receipt_id", ""))
+        _stop_df["_cancel_count"] = _stop_df["_oid_int"].map(lambda x: _stop_order_ids.get(x, {}).get("cancel_count", 1))
+        _stop_df["_cancel_reason"] = _stop_df["_oid_int"].map(lambda x: _stop_order_ids.get(x, {}).get("cancel_reason", ""))
+        _acct_id_map = dict(zip(accounts_df["id"].astype(int), accounts_df["account_name"]))
+        _stop_df["계정"] = _stop_df["_account_id"].astype(int).map(_acct_id_map)
+
+    # 임시 컬럼 정리
+    _stop_df = _stop_df.drop(columns=["_oid_int"], errors="ignore")
+    _safe_df = _safe_df.drop(columns=["_oid_int"], errors="ignore")
+
+    return _stop_df, _safe_df
 
 
 def _match_by_sequence(hanjin_df, delivery_df, accounts_df):
