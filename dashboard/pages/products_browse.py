@@ -828,8 +828,8 @@ def _render_mismatch(accounts_df, account_names):
                                 st.dataframe(_error_df, use_container_width=True, hide_index=True)
 
                 st.cache_data.clear()
-                time.sleep(1)
-                st.rerun()
+                # rerun 하지 않음 — 결과를 먼저 확인할 수 있도록
+                st.info("새로고침하면 최신 누락 목록을 볼 수 있습니다.")
 
         st.divider()
 
