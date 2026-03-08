@@ -867,8 +867,9 @@ def _render_delivery_list(instruct_all):
         _box_counts = _dl_df.groupby("묶음배송번호")["묶음배송번호"].transform("count")
         _dl_df["_is_bundle"] = (_box_counts > 1).astype(int)
         _dl_df["_bundle_first_book"] = _dl_df.groupby("묶음배송번호")["등록상품명"].transform("first")
-        _dl_df = _dl_df.sort_values(["_is_bundle", "_bundle_first_book", "등록상품명", "묶음배송번호"]).reset_index(drop=True)
-        _dl_df = _dl_df.drop(columns=["_is_bundle", "_bundle_first_book"])
+        _dl_df["_is_single_qty"] = (_dl_df["구매수(수량)"] <= 1).astype(int)  # 0=2권이상(앞), 1=1권(뒤)
+        _dl_df = _dl_df.sort_values(["_is_bundle", "_bundle_first_book", "등록상품명", "_is_single_qty", "묶음배송번호"]).reset_index(drop=True)
+        _dl_df = _dl_df.drop(columns=["_is_bundle", "_bundle_first_book", "_is_single_qty"])
         _dl_df["번호"] = range(1, len(_dl_df) + 1)
 
         # 세션에 저장 (송장 매칭용)
