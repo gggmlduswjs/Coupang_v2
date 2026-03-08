@@ -1,4 +1,5 @@
 """상품조회 페이지 — 전체 대시보드 + 계정별 테이블 + 불일치/누락 관리"""
+import io
 import logging
 import re
 import time
@@ -197,6 +198,157 @@ def _load_listings(account_id, status_filter="전체", search_q=""):
     """, params)
 
 
+def _render_all_products(pub_rates):
+    """전체 상품 목록 (모든 계정, 검색+수정 가능)"""
+    st.subheader("전체 상품")
+
+    # 필터
+    _fc1, _fc2, _fc3 = st.columns([1, 1, 3])
+    with _fc1:
+        _all_st = st.selectbox("상태", ["판매중", "전체", "판매중지", "대기", "품절", "반려"], key="bw_all_st")
+    with _fc2:
+        _pub_list = ["전체"] + sorted(
+            query_df_cached("SELECT DISTINCT COALESCE(l.brand, '') as b FROM listings l WHERE l.brand IS NOT NULL AND l.brand != '' ORDER BY b")["b"].tolist()
+        )
+        _pub_filter = st.selectbox("출판사/브랜드", _pub_list, key="bw_all_pub")
+    with _fc3:
+        _all_q = st.text_input("검색 (상품명 / ISBN / 쿠팡ID)", key="bw_all_q")
+
+    # 쿼리 조건
+    where_parts = ["1=1"]
+    params = {}
+    _filter_map = {"판매중": "active", "판매중지": "paused", "대기": "pending", "품절": "sold_out", "반려": "rejected"}
+    if _all_st != "전체":
+        where_parts.append("l.coupang_status = :status")
+        params["status"] = _filter_map.get(_all_st, _all_st)
+    if _pub_filter != "전체":
+        where_parts.append("l.brand = :brand")
+        params["brand"] = _pub_filter
+    if _all_q:
+        where_parts.append("(l.product_name LIKE :sq OR l.isbn LIKE :sq OR CAST(l.coupang_product_id AS TEXT) LIKE :sq)")
+        params["sq"] = f"%{_all_q}%"
+    where_sql = " AND ".join(where_parts)
+
+    all_df = query_df(f"""
+        SELECT a.account_name as 계정,
+               COALESCE(l.product_name, '(미등록)') as 상품명,
+               COALESCE(l.original_price, 0) as 정가,
+               l.sale_price as 판매가,
+               l.delivery_charge_type as 배송유형,
+               COALESCE(l.delivery_charge, 0) as 배송비,
+               COALESCE(l.stock_quantity, 10) as 재고,
+               l.coupang_status as 상태,
+               l.isbn as "ISBN",
+               COALESCE(l.brand, '') as 출판사,
+               COALESCE(CAST(l.coupang_product_id AS TEXT), '-') as "쿠팡ID",
+               COALESCE(CAST(l.vendor_item_id AS TEXT), '') as "VID",
+               l.account_id as _account_id,
+               l.id as _lid,
+               pub.supply_rate as _pub_rate,
+               COALESCE(pub2.name, '') as _book_pub
+        FROM listings l
+        JOIN accounts a ON a.id = l.account_id
+        LEFT JOIN publishers pub ON l.brand = pub.name
+        LEFT JOIN books b ON l.isbn = b.isbn
+        LEFT JOIN publishers pub2 ON b.publisher_id = pub2.id
+        WHERE {where_sql}
+        ORDER BY COALESCE(l.brand, 'zzz'), l.product_name, a.account_name
+    """, params)
+
+    if all_df.empty:
+        st.info("조건에 맞는 상품이 없습니다.")
+        return
+
+    all_df = _calc_margin(all_df, pub_rates)
+
+    # KPI
+    _k1, _k2, _k3 = st.columns(3)
+    _k1.metric("상품 수", f"{len(all_df):,}건")
+    _k2.metric("출판사/브랜드", f"{all_df['출판사'].nunique()}개")
+    _k3.metric("계정", f"{all_df['계정'].nunique()}개")
+
+    # 그리드
+    _grid_cols = ["계정", "상품명", "정가", "판매가", "순마진", "공급율", "배송", "재고", "상태", "ISBN", "출판사", "쿠팡ID", "VID"]
+    _grid_df = all_df[_grid_cols]
+
+    gb = GridOptionsBuilder.from_dataframe(_grid_df)
+    gb.configure_selection(selection_mode="single", use_checkbox=False)
+    gb.configure_column("상품명", minWidth=200)
+    gb.configure_column("공급율", width=70)
+    gb.configure_column("계정", width=100)
+    gb.configure_grid_options(domLayout="normal")
+    grid_resp = AgGrid(
+        _grid_df,
+        gridOptions=gb.build(),
+        update_on=["selectionChanged"],
+        height=500,
+        theme="streamlit",
+        key="bw_all_grid",
+    )
+
+    # 엑셀 다운로드
+    _xl_buf = io.BytesIO()
+    with pd.ExcelWriter(_xl_buf, engine="openpyxl") as writer:
+        _grid_df.to_excel(writer, sheet_name="전체상품", index=False)
+    _xl_buf.seek(0)
+    st.download_button(
+        f"엑셀 다운로드 ({len(_grid_df):,}건)",
+        _xl_buf.getvalue(),
+        file_name="쿠팡_전체상품.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="bw_all_xlsx_dl",
+        type="primary",
+    )
+
+    # 행 선택 → 수정 폼
+    selected = grid_resp["selected_rows"]
+    if selected is not None and len(selected) > 0:
+        sel = selected.iloc[0] if hasattr(selected, "iloc") else pd.Series(selected[0])
+
+        st.divider()
+        st.markdown(f"#### {sel['상품명']}  ({sel['계정']})")
+
+        # listings.id 조회
+        _lid_row = query_df("""
+            SELECT l.id, l.original_price, l.account_id, l.vendor_item_id
+            FROM listings l
+            JOIN accounts a ON a.id = l.account_id
+            WHERE a.account_name = :acct_name
+              AND CAST(l.coupang_product_id AS TEXT) = :cpid
+            LIMIT 1
+        """, {"acct_name": sel["계정"], "cpid": str(sel["쿠팡ID"])})
+
+        if not _lid_row.empty:
+            _row = _lid_row.iloc[0]
+            _lid = int(_row["id"])
+            _cur_orig = int(_row["original_price"] or 0)
+            _acct_id = int(_row["account_id"])
+            _vid = _row["vendor_item_id"]
+
+            with st.form("bw_all_edit_form"):
+                _e1, _e2, _e3 = st.columns(3)
+                with _e1:
+                    _new_sp = st.number_input("판매가", value=int(sel["판매가"] or 0), step=100, key="bw_all_sp")
+                with _e2:
+                    _new_orig = st.number_input("기준가(정가)", value=_cur_orig, step=100, key="bw_all_orig")
+                with _e3:
+                    _new_stock = st.number_input("재고", value=int(sel["재고"] or 0), step=1, key="bw_all_stock")
+
+                if st.form_submit_button("저장", type="primary"):
+                    try:
+                        run_sql(
+                            "UPDATE listings SET sale_price=:sp, original_price=:op, stock_quantity=:sq WHERE id=:id",
+                            {"sp": _new_sp, "op": _new_orig, "sq": _new_stock, "id": _lid},
+                        )
+                        st.success("DB 저장 완료")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+        else:
+            st.warning("DB에서 해당 상품을 찾을 수 없습니다.")
+
+
 def render(selected_account, accounts_df, account_names):
     """상품조회 페이지 메인"""
     st.title("상품조회")
@@ -266,10 +418,13 @@ def _render_dashboard(accounts_df, account_names):
 
     st.divider()
 
-    # ── 계정별 상품 테이블 (확장형) ──
+    # ── 전체 상품 목록 ──
     pub_rates = dict(query_df_cached("SELECT name, supply_rate FROM publishers").values.tolist())
+    _render_all_products(pub_rates)
 
-    # 계정 선택 (기본: 전체 계정 순회)
+    st.divider()
+
+    # ── 계정별 상품 테이블 (확장형) ──
     if accounts_df.empty:
         st.info("활성 계정이 없습니다.")
         return
