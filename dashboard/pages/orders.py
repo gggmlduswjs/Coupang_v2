@@ -460,17 +460,11 @@ def _render_purchase_order(instruct_all, accounts_df):
     import re as _re
 
     _dist_orders = instruct_all.copy()
-    _before = len(_dist_orders)
-    _dist_orders = _dist_orders[~_dist_orders["옵션명"].apply(lambda x: is_gift_item(str(x)))].copy()
-    _gift_cnt = _before - len(_dist_orders)
 
     with st.expander(f"📋 발주서 ({len(_dist_orders)}건)", expanded=False):
         if _dist_orders.empty:
             st.info("발주서 대상 주문이 없습니다.")
             return
-
-        if _gift_cnt > 0:
-            st.caption(f"사은품/증정품 {_gift_cnt}건 제외됨")
 
         _pub_list = query_df_cached("SELECT name FROM publishers WHERE is_active = true ORDER BY LENGTH(name) DESC")
         _pub_names = _pub_list["name"].tolist() if not _pub_list.empty else []
@@ -701,15 +695,8 @@ def _render_geukdong_excel(instruct_all, accounts_df):
         _gk_extra = _gk_orders.apply(_gk_enrich, axis=1)
         _gk_orders = pd.concat([_gk_orders, _gk_extra], axis=1)
 
-        # 사은품 필터링
-        _gk_before = len(_gk_orders)
-        _gk_orders = _gk_orders[~_gk_orders["옵션명"].apply(lambda x: is_gift_item(str(x)))].copy()
-        _gk_gift_cnt = _gk_before - len(_gk_orders)
-        if _gk_gift_cnt > 0:
-            st.caption(f"사은품/증정품 {_gk_gift_cnt}건 제외됨")
-
         if _gk_orders.empty:
-            st.info("사은품 제외 후 주문이 없습니다.")
+            st.info("극동 대상 주문이 없습니다.")
             return
 
         # 도서명 정리
