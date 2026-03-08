@@ -257,13 +257,10 @@ def render(selected_account, accounts_df, account_names):
                     st.subheader("답변 작성")
                     _reply_acct = st.selectbox("답변 계정", account_names, key="cs_online_reply_acct")
                     _reply_content = st.text_area("답변 내용", key="cs_online_reply_content", height=100)
-                    _reply_by = st.text_input("WING ID (응답자)", key="cs_online_reply_by")
 
                     if st.button("답변 등록", type="primary", key="btn_online_reply"):
                         if not _reply_content.strip():
                             st.error("답변 내용을 입력하세요.")
-                        elif not _reply_by.strip():
-                            st.error("WING ID를 입력하세요.")
                         else:
                             _reply_account = None
                             if _reply_acct and not accounts_df.empty:
@@ -276,7 +273,7 @@ def render(selected_account, accounts_df, account_names):
                                     _cl.reply_online_inquiry(
                                         inquiry_id=int(_sel_id),
                                         content=_reply_content.strip(),
-                                        reply_by=_reply_by.strip(),
+                                        reply_by=str(_reply_account["vendor_id"]),
                                     )
                                     st.success(f"답변 등록 완료: 문의 {_sel_id}")
                                     _clear_cs_cache()
@@ -350,15 +347,11 @@ def render(selected_account, accounts_df, account_names):
                         st.subheader("답변 작성")
                         _cc_reply_acct = st.selectbox("답변 계정", account_names, key="cs_cc_reply_acct")
                         _cc_content = st.text_area("답변 내용 (2~1000자)", key="cs_cc_content", height=100)
-                        _cc_reply_by = st.text_input("WING ID (응답자)", key="cs_cc_reply_by")
                         _parent_id = _last_agent.get("answerId")
-                        st.caption(f"부모이관글 ID: {_parent_id}")
 
                         if st.button("답변 등록", type="primary", key="btn_cc_reply"):
                             if not _cc_content.strip() or len(_cc_content.strip()) < 2:
                                 st.error("답변 내용을 2자 이상 입력하세요.")
-                            elif not _cc_reply_by.strip():
-                                st.error("WING ID를 입력하세요.")
                             else:
                                 _cc_account = None
                                 if _cc_reply_acct and not accounts_df.empty:
@@ -371,7 +364,7 @@ def render(selected_account, accounts_df, account_names):
                                         _cl.reply_callcenter_inquiry(
                                             inquiry_id=int(_cc_sel),
                                             content=_cc_content.strip(),
-                                            reply_by=_cc_reply_by.strip(),
+                                            reply_by=str(_cc_account["vendor_id"]),
                                             parent_answer_id=int(_parent_id),
                                         )
                                         st.success(f"답변 등록 완료: 상담번호 {_cc_sel}")
@@ -387,27 +380,23 @@ def render(selected_account, accounts_df, account_names):
                         st.subheader("문의 확인 처리")
                         st.caption("쿠팡이 상담 완료한 이관건 — 판매자 확인 처리")
                         _confirm_acct = st.selectbox("확인 계정", account_names, key="cs_cc_confirm_acct")
-                        _confirm_by = st.text_input("WING ID (확인자)", key="cs_cc_confirm_by")
 
                         if st.button("확인 처리", type="primary", key="btn_cc_confirm"):
-                            if not _confirm_by.strip():
-                                st.error("WING ID를 입력하세요.")
+                            _cf_account = None
+                            if _confirm_acct and not accounts_df.empty:
+                                _m = accounts_df["account_name"] == _confirm_acct
+                                if _m.any():
+                                    _cf_account = accounts_df[_m].iloc[0]
+                            _cl = create_wing_client(_cf_account) if _cf_account is not None else None
+                            if _cl:
+                                try:
+                                    _cl.confirm_callcenter_inquiry(
+                                        inquiry_id=int(_cc_sel),
+                                        confirm_by=str(_cf_account["vendor_id"]),
+                                    )
+                                    st.success(f"확인 처리 완료: 상담번호 {_cc_sel}")
+                                    _clear_cs_cache()
+                                except CoupangWingError as e:
+                                    st.error(f"API 오류: {e}")
                             else:
-                                _cf_account = None
-                                if _confirm_acct and not accounts_df.empty:
-                                    _m = accounts_df["account_name"] == _confirm_acct
-                                    if _m.any():
-                                        _cf_account = accounts_df[_m].iloc[0]
-                                _cl = create_wing_client(_cf_account) if _cf_account is not None else None
-                                if _cl:
-                                    try:
-                                        _cl.confirm_callcenter_inquiry(
-                                            inquiry_id=int(_cc_sel),
-                                            confirm_by=_confirm_by.strip(),
-                                        )
-                                        st.success(f"확인 처리 완료: 상담번호 {_cc_sel}")
-                                        _clear_cs_cache()
-                                    except CoupangWingError as e:
-                                        st.error(f"API 오류: {e}")
-                                else:
-                                    st.error("API 클라이언트 생성 불가")
+                                st.error("API 클라이언트 생성 불가")
