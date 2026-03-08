@@ -314,7 +314,7 @@ def render(selected_account, accounts_df, account_names):
     st.divider()
 
     # ── 탭 ──
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab4 = st.tabs([
         f"미처리 ({len(_pending)})",
         "전체 내역",
         "교환",
