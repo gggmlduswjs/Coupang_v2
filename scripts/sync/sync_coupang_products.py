@@ -492,9 +492,34 @@ def sync_account_products(
                 except Exception:
                     pass  # 실패해도 상세 동기화는 계속
 
-            # raw_json 저장
+            # raw_json + 파싱 필드 저장
             lst.raw_json = json.dumps(detail_data, ensure_ascii=False)
             lst.detail_synced_at = now
+
+            # search_tags, images, purchase_options, search_options
+            items = detail_data.get("items", [])
+            if items:
+                first_item = items[0]
+                tags = first_item.get("searchTags", [])
+                lst.search_tags = ", ".join(str(t) for t in tags) if tags else ""
+
+                img_list = []
+                for img in first_item.get("images", []):
+                    url = img.get("cdnPath", img.get("vendorPath", ""))
+                    if url:
+                        img_list.append(url)
+                lst.images = img_list
+
+                purchase_opts = []
+                search_opts = []
+                for attr in first_item.get("attributes", []):
+                    entry = {"type": attr.get("attributeTypeName", ""), "value": attr.get("attributeValueName", "")}
+                    if attr.get("exposed") == "EXPOSED":
+                        purchase_opts.append(entry)
+                    else:
+                        search_opts.append(entry)
+                lst.purchase_options = purchase_opts
+                lst.search_options = search_opts
 
             result["detail_synced"] += 1
 
