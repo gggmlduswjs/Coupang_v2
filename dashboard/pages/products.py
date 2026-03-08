@@ -16,21 +16,6 @@ def render(selected_account, accounts_df, account_names):
     """상품 관리 페이지 렌더링"""
     st.title("상품 관리")
 
-    # ── 계정 선택 (페이지 내부) ──
-    _prod_c1, _prod_c2 = st.columns([3, 7])
-    with _prod_c1:
-        _prod_acct_name = st.selectbox(
-            "계정 선택", account_names,
-            index=0 if account_names else None,
-            key="prod_account",
-        )
-    selected_account = None
-    if _prod_acct_name and not accounts_df.empty:
-        mask = accounts_df["account_name"] == _prod_acct_name
-        if mask.any():
-            selected_account = accounts_df[mask].iloc[0]
-    selected_account_name = selected_account["account_name"] if selected_account is not None else None
-
     # ── 전체 요약 KPI ──
     _kpi = query_df("""
         SELECT
@@ -90,9 +75,24 @@ def render(selected_account, accounts_df, account_names):
 
     st.divider()
 
+    # ── 계정 선택 (전체 요약 아래) ──
+    _prod_c1, _prod_c2 = st.columns([3, 7])
+    with _prod_c1:
+        _prod_acct_name = st.selectbox(
+            "계정 선택", account_names,
+            index=0 if account_names else None,
+            key="prod_account",
+        )
+    selected_account = None
+    if _prod_acct_name and not accounts_df.empty:
+        mask = accounts_df["account_name"] == _prod_acct_name
+        if mask.any():
+            selected_account = accounts_df[mask].iloc[0]
+    selected_account_name = selected_account["account_name"] if selected_account is not None else None
+
     # ── 계정 필요 ──
     if selected_account is None:
-        st.info("왼쪽에서 계정을 선택하면 상세 조회할 수 있습니다.")
+        st.info("계정을 선택하면 상세 조회할 수 있습니다.")
         st.stop()
 
     account_id = int(selected_account["id"])

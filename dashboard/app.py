@@ -59,7 +59,8 @@ accounts_df = query_df("""
 account_names = accounts_df["account_name"].tolist() if not accounts_df.empty else []
 
 st.sidebar.divider()
-page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "반품", "CS", "상품"], key="sidebar_menu")
+page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "반품/교환", "CS", "상품"], key="sidebar_menu")
+st.sidebar.divider()
 
 if os.environ.get("RAILWAY_ENVIRONMENT"):
     try:
@@ -82,7 +83,7 @@ elif page == "주문/배송":
     from dashboard.pages.orders import render
     render(None, accounts_df, account_names)
 
-elif page == "반품":
+elif page == "반품/교환":
     from dashboard.pages.returns import render
     render(None, accounts_df, account_names)
 
