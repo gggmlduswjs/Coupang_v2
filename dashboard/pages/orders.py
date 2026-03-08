@@ -863,10 +863,12 @@ def _render_delivery_list(instruct_all):
         _dl_df["등록상품명"] = _dl_df["등록상품명"].fillna("").astype(str)
 
         # 묶음배송(한 사람이 여러 책) 구분: 단건 먼저, 묶음은 뒤로
+        # 묶음배송도 첫 번째 책 이름 기준으로 같은 책끼리 모음
         _box_counts = _dl_df.groupby("묶음배송번호")["묶음배송번호"].transform("count")
-        _dl_df["_is_bundle"] = (_box_counts > 1).astype(int)  # 0=단건, 1=묶음
-        _dl_df = _dl_df.sort_values(["_is_bundle", "등록상품명", "묶음배송번호"]).reset_index(drop=True)
-        _dl_df = _dl_df.drop(columns=["_is_bundle"])
+        _dl_df["_is_bundle"] = (_box_counts > 1).astype(int)
+        _dl_df["_bundle_first_book"] = _dl_df.groupby("묶음배송번호")["등록상품명"].transform("first")
+        _dl_df = _dl_df.sort_values(["_is_bundle", "_bundle_first_book", "등록상품명", "묶음배송번호"]).reset_index(drop=True)
+        _dl_df = _dl_df.drop(columns=["_is_bundle", "_bundle_first_book"])
         _dl_df["번호"] = range(1, len(_dl_df) + 1)
 
         # 세션에 저장 (송장 매칭용)
