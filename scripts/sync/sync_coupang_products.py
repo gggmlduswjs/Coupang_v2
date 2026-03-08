@@ -477,14 +477,15 @@ def sync_account_products(
             if parsed["sale_price"] and parsed["sale_price"] > 0:
                 lst.sale_price = parsed["sale_price"]
 
-            # onSale 상태 조회 (vendor_item_id가 있으면)
+            # onSale 상태 조회 (vendor_item_id가 있고, deleted가 아닌 경우만)
             vid = lst.vendor_item_id
-            if vid:
+            if vid and lst.coupang_status not in ("deleted", "rejected"):
                 try:
                     inv_resp = client.get_item_inventory(int(vid))
                     inv_data = inv_resp.get("data", inv_resp) if isinstance(inv_resp, dict) else {}
-                    on_sale = inv_data.get("onSale", True)
-                    lst.coupang_status = "active" if on_sale else "paused"
+                    on_sale = inv_data.get("onSale")
+                    if on_sale is not None:  # 명시적으로 있을 때만 상태 변경
+                        lst.coupang_status = "active" if on_sale else "paused"
                     # 재고도 업데이트
                     stock = inv_data.get("amountInStock")
                     if stock is not None:
