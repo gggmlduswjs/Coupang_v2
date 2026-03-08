@@ -34,21 +34,27 @@ _DB_STATUSES = ["DEPARTURE", "DELIVERING", "FINAL_DELIVERY", "NONE_TRACKING"]
 
 
 def _api_row(acct_name, acct_id, status, os_data, item):
-    """API 응답 → DataFrame 행 변환"""
+    """API 응답 → DataFrame 행 변환 (쿠팡 OPEN API v5 스펙 기준)"""
     vid = item.get("vendorItemId") or os_data.get("vendorItemId") or 0
     spid = item.get("sellerProductId") or os_data.get("sellerProductId")
     sp_name = item.get("sellerProductName") or os_data.get("sellerProductName", "")
     order_price = _extract_price(item.get("orderPrice"))
     sales_price = _extract_price(item.get("salesPrice"))
     shipping_price = _extract_price(os_data.get("shippingPrice"))
+    remote_price = _extract_price(os_data.get("remotePrice"))
 
     orderer = os_data.get("orderer") or {}
     receiver = os_data.get("receiver") or {}
+    overseas = os_data.get("overseaShippingInfoDto") or {}
     addr1 = receiver.get("addr1", "") or ""
     addr2 = receiver.get("addr2", "") or ""
 
     ordered_at = _parse_dt(os_data.get("orderedAt"))
     delivered_date = _parse_dt(os_data.get("deliveredDate"))
+
+    # 등록옵션명 / 최초등록옵션명 (orderItems 레벨)
+    seller_item_name = item.get("sellerProductItemName") or ""
+    first_item_name = item.get("firstSellerProductItemName") or ""
 
     return {
         "계정": acct_name,
@@ -77,16 +83,17 @@ def _api_row(acct_name, acct_id, status, os_data, item):
         "수취인주소": f"{addr1} {addr2}".strip(),
         "배송메세지": os_data.get("parcelPrintMessage") or "",
         "배송비": shipping_price,
-        "도서산간추가배송비": int(os_data.get("remoteAreaExtraCharge", 0) or 0),
+        "도서산간추가배송비": remote_price,
         "결제위치": os_data.get("refer", ""),
         "분리배송가능": bool(os_data.get("ableSplitShipping", False)),
-        "주문시출고예정일": _parse_dt(os_data.get("estimatedShippingDate")) or "",
-        "배송비구분": "",
+        "주문시출고예정일": item.get("estimatedShippingDate") or "",
+        "배송비구분": item.get("deliveryChargeTypeName") or "",
         "판매단가": sales_price,
-        "최초등록상품옵션명": "",
-        "업체상품코드": "",
-        "개인통관번호": "",
-        "통관용전화번호": "",
+        "최초등록상품옵션명": f"{sp_name},{first_item_name}" if first_item_name else "",
+        "업체상품코드": item.get("externalVendorSkuCode") or "",
+        "개인통관번호": overseas.get("personalCustomsClearanceCode") or "",
+        "통관용전화번호": overseas.get("ordererPhoneNumber") or "",
+        "등록옵션명": seller_item_name,
     }
 
 

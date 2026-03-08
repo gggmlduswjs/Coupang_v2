@@ -256,14 +256,25 @@ def render(selected_account, accounts_df, account_names):
                         _total_fail += len(_ack_ids)
 
                 if _total_success > 0:
-                    # DeliveryList 엑셀 생성 (쿠팡 동일 40컬럼)
-                    _ack_xl_bytes = _build_delivery_excel(_sel_data)
+                    # 발주확인 후 배송지 재확인 (쿠팡 API 권고사항)
+                    # 결제완료 중 고객이 배송지를 변경할 수 있으므로 INSTRUCT 재조회
+                    clear_order_caches()
+                    _refreshed = load_all_orders_live(accounts_df)
+                    _refreshed_instruct = _refreshed[_refreshed["상태"] == "INSTRUCT"].copy() if not _refreshed.empty else pd.DataFrame()
+                    if not _refreshed_instruct.empty:
+                        _ack_box_ids = _sel_data["묶음배송번호"].unique().tolist()
+                        _ack_orders = _refreshed_instruct[_refreshed_instruct["묶음배송번호"].isin(_ack_box_ids)]
+                        if not _ack_orders.empty:
+                            _ack_xl_bytes = _build_delivery_excel(_ack_orders)
+                        else:
+                            _ack_xl_bytes = _build_delivery_excel(_sel_data)
+                    else:
+                        _ack_xl_bytes = _build_delivery_excel(_sel_data)
                     st.session_state["_ack_delivery_excel"] = {
                         "data": _ack_xl_bytes,
                         "count": len(_sel_data),
                         "filename": f"DeliveryList({date.today().isoformat()}).xlsx",
                     }
-                    clear_order_caches()
                     st.rerun()
 
             # ── 주문 취소 ──
@@ -794,7 +805,7 @@ def _render_delivery_list(instruct_all):
                 "출고일(발송일)": "",
                 "주문일": _row.get("주문일시", _row.get("주문일", "")),
                 "등록상품명": str(_row.get("상품명") or ""),
-                "등록옵션명": _row.get("옵션명", ""),
+                "등록옵션명": _row.get("등록옵션명") or _row.get("옵션명", ""),
                 "노출상품명(옵션명)": f"{_row.get('상품명', '')}, {_row.get('옵션명', '')}",
                 "노출상품ID": str(_row.get("_seller_product_id", "")),
                 "옵션ID": str(_row.get("_vendor_item_id", "")),
@@ -1236,7 +1247,7 @@ def _build_delivery_excel(orders_df):
             "출고일(발송일)": "",
             "주문일": _row.get("주문일시", _row.get("주문일", "")),
             "등록상품명": str(_row.get("상품명") or ""),
-            "등록옵션명": _row.get("옵션명", ""),
+            "등록옵션명": _row.get("등록옵션명") or _row.get("옵션명", ""),
             "노출상품명(옵션명)": f"{_row.get('상품명', '')}, {_row.get('옵션명', '')}",
             "노출상품ID": str(_row.get("_seller_product_id", "")),
             "옵션ID": str(_row.get("_vendor_item_id", "")),
