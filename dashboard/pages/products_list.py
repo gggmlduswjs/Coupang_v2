@@ -77,7 +77,7 @@ def _to_cdn_url(path):
     return f"https://image6.coupangcdn.com/image/{path}"
 
 
-def _render_product_detail(_pd, _wing_client, account_id, _sel_vid):
+def _render_product_detail(_pd, _wing_client, account_id, _sel_vid, key_prefix="rt"):
     """WING 상품 상세 — 쿠팡 Wing 상품등록 페이지 스타일"""
     _spid = _pd.get("sellerProductId", "")
     _items = _pd.get("items", [])
@@ -120,7 +120,7 @@ def _render_product_detail(_pd, _wing_client, account_id, _sel_vid):
 
         # ── 가격/재고 수정 폼 ──
         st.markdown("##### 가격/재고 수정")
-        with st.form("rt_edit_price_form"):
+        with st.form(f"{key_prefix}_edit_price_form"):
             _edit_items = []
             for _idx, _it in enumerate(_items):
                 _vid = _it.get("vendorItemId", "")
@@ -135,11 +135,11 @@ def _render_product_detail(_pd, _wing_client, account_id, _sel_vid):
                     st.caption(f"**{_opt_name}** (VID: {_vid})")
                 _ec1, _ec2, _ec3 = st.columns(3)
                 with _ec1:
-                    _new_sp = st.number_input("판매가", value=_cur_sp, step=100, key=f"rt_sp_{_idx}")
+                    _new_sp = st.number_input("판매가", value=_cur_sp, step=100, key=f"{key_prefix}_sp_{_idx}")
                 with _ec2:
-                    _new_op = st.number_input("정상가(기준가)", value=_cur_op, step=100, key=f"rt_op_{_idx}")
+                    _new_op = st.number_input("정상가(기준가)", value=_cur_op, step=100, key=f"{key_prefix}_op_{_idx}")
                 with _ec3:
-                    _new_stock = st.number_input("재고", value=_cur_stock, step=1, key=f"rt_stock_{_idx}")
+                    _new_stock = st.number_input("재고", value=_cur_stock, step=1, key=f"{key_prefix}_stock_{_idx}")
                 _edit_items.append({"vid": _vid, "sp": _new_sp, "op": _new_op, "stock": _new_stock,
                                     "cur_sp": _cur_sp, "cur_op": _cur_op, "cur_stock": _cur_stock})
 
@@ -256,19 +256,19 @@ def _render_product_detail(_pd, _wing_client, account_id, _sel_vid):
 
     # ═══ 9. 배송비 수정 (승인불필요) ═══
     with st.expander("배송비 수정 (승인불필요)"):
-        with st.form("rt_edit_delivery_form"):
+        with st.form(f"{key_prefix}_edit_delivery_form"):
             _dct_opts = ["CONDITIONAL_FREE", "FREE", "NOT_FREE"]
             _cur_dct = _pd.get("deliveryChargeType", "CONDITIONAL_FREE")
             _df1, _df2, _df3 = st.columns(3)
             with _df1:
                 _new_dct = st.selectbox("배송비 유형", _dct_opts,
                                         index=_dct_opts.index(_cur_dct) if _cur_dct in _dct_opts else 0,
-                                        key="rt_dct")
+                                        key=f"{key_prefix}_dct")
             with _df2:
-                _new_dc = st.number_input("기본배송비", value=_pd.get("deliveryCharge", 0), step=100, key="rt_dc")
+                _new_dc = st.number_input("기본배송비", value=_pd.get("deliveryCharge", 0), step=100, key=f"{key_prefix}_dc")
             with _df3:
-                _new_fsa = st.number_input("무료조건금액", value=_pd.get("freeShipOverAmount", 0), step=1000, key="rt_fsa")
-            _new_rc = st.number_input("반품배송비", value=_pd.get("returnCharge", 0), step=100, key="rt_rc")
+                _new_fsa = st.number_input("무료조건금액", value=_pd.get("freeShipOverAmount", 0), step=1000, key=f"{key_prefix}_fsa")
+            _new_rc = st.number_input("반품배송비", value=_pd.get("returnCharge", 0), step=100, key=f"{key_prefix}_rc")
 
             if st.form_submit_button("배송비 수정 (API)", type="primary"):
                 try:

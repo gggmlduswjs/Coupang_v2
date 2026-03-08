@@ -300,53 +300,54 @@ def _render_all_products(pub_rates):
         type="primary",
     )
 
-    # 행 선택 → 수정 폼
+    # 행 선택 → WING 상세 조회
     selected = grid_resp["selected_rows"]
     if selected is not None and len(selected) > 0:
         sel = selected.iloc[0] if hasattr(selected, "iloc") else pd.Series(selected[0])
+        _sel_cpid = str(sel.get("쿠팡ID", "") or "")
+        _sel_vid = str(sel.get("VID", "") or "")
+        _sel_acct = sel.get("계정", "")
 
-        st.divider()
-        st.markdown(f"#### {sel['상품명']}  ({sel['계정']})")
+        # 계정 정보 조회 → WING 클라이언트 생성
+        _acct_row = query_df("SELECT * FROM accounts WHERE account_name = :name LIMIT 1", {"name": _sel_acct})
+        if not _acct_row.empty:
+            _acct = _acct_row.iloc[0]
+            _acct_id = int(_acct["id"])
+            _wc = create_wing_client(_acct)
 
-        # listings.id 조회
-        _lid_row = query_df("""
-            SELECT l.id, l.original_price, l.account_id, l.vendor_item_id
-            FROM listings l
-            JOIN accounts a ON a.id = l.account_id
-            WHERE a.account_name = :acct_name
-              AND CAST(l.coupang_product_id AS TEXT) = :cpid
-            LIMIT 1
-        """, {"acct_name": sel["계정"], "cpid": str(sel["쿠팡ID"])})
+            st.divider()
+            st.markdown(f"#### {sel['상품명']}  (`{_sel_acct}`)")
 
-        if not _lid_row.empty:
-            _row = _lid_row.iloc[0]
-            _lid = int(_row["id"])
-            _cur_orig = int(_row["original_price"] or 0)
-            _acct_id = int(_row["account_id"])
-            _vid = _row["vendor_item_id"]
-
-            with st.form("bw_all_edit_form"):
-                _e1, _e2, _e3 = st.columns(3)
-                with _e1:
-                    _new_sp = st.number_input("판매가", value=int(sel["판매가"] or 0), step=100, key="bw_all_sp")
-                with _e2:
-                    _new_orig = st.number_input("기준가(정가)", value=_cur_orig, step=100, key="bw_all_orig")
-                with _e3:
-                    _new_stock = st.number_input("재고", value=int(sel["재고"] or 0), step=1, key="bw_all_stock")
-
-                if st.form_submit_button("저장", type="primary"):
+            if _wc and _sel_cpid and _sel_cpid != "-":
+                # 실시간 조회 버튼
+                if st.button("WING 실시간 조회", key="bw_all_rt_btn", type="primary"):
                     try:
-                        run_sql(
-                            "UPDATE listings SET sale_price=:sp, original_price=:op, stock_quantity=:sq WHERE id=:id",
-                            {"sp": _new_sp, "op": _new_orig, "sq": _new_stock, "id": _lid},
-                        )
-                        st.success("DB 저장 완료")
-                        st.cache_data.clear()
-                        st.rerun()
+                        _prod = _wc.get_product(int(_sel_cpid))
+                        _pd = _prod.get("data", _prod)
+                        st.session_state["_bw_all_product_data"] = _pd
+                        st.session_state["_bw_all_cpid"] = _sel_cpid
+                        st.session_state["_bw_all_acct_id"] = _acct_id
+                        st.session_state["_bw_all_vid"] = _sel_vid
+                        # DB에 상세 저장
+                        from dashboard.pages.products_list import _save_product_detail_to_db
+                        _save_product_detail_to_db(_acct_id, int(_sel_cpid), _pd)
+                    except CoupangWingError as e:
+                        st.error(f"조회 실패: {e.message}")
                     except Exception as e:
-                        st.error(f"저장 실패: {e}")
-        else:
-            st.warning("DB에서 해당 상품을 찾을 수 없습니다.")
+                        st.error(f"조회 실패: {e}")
+
+                # 세션에 저장된 데이터 표시
+                _cached_pd = st.session_state.get("_bw_all_product_data")
+                if _cached_pd and st.session_state.get("_bw_all_cpid") == _sel_cpid:
+                    from dashboard.pages.products_list import _render_product_detail
+                    _render_product_detail(
+                        _cached_pd, _wc,
+                        st.session_state.get("_bw_all_acct_id", _acct_id),
+                        st.session_state.get("_bw_all_vid", _sel_vid),
+                        key_prefix="bw_all_rt",
+                    )
+            else:
+                st.info("WING API 연결 불가 (API 키 미설정 또는 쿠팡ID 없음)")
 
 
 def render(selected_account, accounts_df, account_names):
