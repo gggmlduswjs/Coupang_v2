@@ -145,12 +145,11 @@ def render(selected_account, accounts_df, account_names):
             _accept_display["결제금액"] = _accept_display["결제금액"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
 
             _display_cols = [
-                "주문번호", "분리배송가능", "택배사", "운송장번호", "주문시출고예정일",
-                "상품/옵션/수량", "수취인/연락처", "수취인주소", "배송상태",
+                "주문번호", "상품/옵션/수량", "수취인/연락처", "수취인주소", "배송상태",
                 "주문일시", "묶음배송번호", "계정", "결제금액",
             ]
             _grid_df = _accept_display[_display_cols].rename(columns={
-                "분리배송가능": "분리배송", "주문시출고예정일": "출고예정일", "수취인주소": "배송지",
+                "수취인주소": "배송지",
             })
 
             gb = GridOptionsBuilder.from_dataframe(_grid_df)
