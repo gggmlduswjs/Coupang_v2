@@ -106,10 +106,10 @@ def render(selected_account, accounts_df, account_names):
     with _tab1:
         st.caption("WING API 실시간 · 체크박스로 선택 → 발주확인(상품준비중) 처리")
 
-        _t1_acct = st.selectbox("계정", ["전체"] + account_names, key="t1_acct")
+        _t1_accts = st.multiselect("계정", account_names, default=account_names, key="t1_acct")
         _t1_data = _accept_all.copy() if not _accept_all.empty else pd.DataFrame()
-        if not _t1_data.empty and _t1_acct != "전체":
-            _t1_data = _t1_data[_t1_data["계정"] == _t1_acct]
+        if not _t1_data.empty and _t1_accts:
+            _t1_data = _t1_data[_t1_data["계정"].isin(_t1_accts)]
 
         _accept_total = _t1_data["묶음배송번호"].nunique() if not _t1_data.empty else 0
         _accept_amount = int(_t1_data["결제금액"].sum()) if not _t1_data.empty else 0
@@ -287,10 +287,10 @@ def render(selected_account, accounts_df, account_names):
     with _tab2:
         st.caption("확정된 주문의 전체 배송 업무: 발주서 → 극동 → 배송리스트 → 한진 → 송장등록")
 
-        _t2_acct = st.selectbox("계정", ["전체"] + account_names, key="t2_acct")
+        _t2_accts = st.multiselect("계정", account_names, default=account_names, key="t2_acct")
         _t2_instruct = _instruct_all.copy() if not _instruct_all.empty else pd.DataFrame()
-        if not _t2_instruct.empty and _t2_acct != "전체":
-            _t2_instruct = _t2_instruct[_t2_instruct["계정"] == _t2_acct]
+        if not _t2_instruct.empty and _t2_accts:
+            _t2_instruct = _t2_instruct[_t2_instruct["계정"].isin(_t2_accts)]
 
         _inst_by_box = get_instruct_by_box(_t2_instruct)
 
@@ -371,11 +371,11 @@ def render(selected_account, accounts_df, account_names):
             _t3_status = st.selectbox("배송 상태", ["DEPARTURE", "DELIVERING", "FINAL_DELIVERY"],
                                       format_func=lambda x: STATUS_MAP.get(x, x), key="t3_status")
         with _t3c2:
-            _t3_acct = st.selectbox("계정", ["전체"] + account_names, key="t3_acct")
+            _t3_accts = st.multiselect("계정", account_names, default=account_names, key="t3_acct")
 
         _t3_data = _filter_status(_all_orders, _t3_status)
-        if not _t3_data.empty and _t3_acct != "전체":
-            _t3_data = _t3_data[_t3_data["계정"] == _t3_acct]
+        if not _t3_data.empty and _t3_accts:
+            _t3_data = _t3_data[_t3_data["계정"].isin(_t3_accts)]
 
         _t3_total = _t3_data["묶음배송번호"].nunique() if not _t3_data.empty else 0
         st.metric(f"{STATUS_MAP.get(_t3_status, _t3_status)} 주문", f"{_t3_total:,}건")
