@@ -358,8 +358,43 @@ def render(selected_account, accounts_df, account_names):
                 _receipt_id = _row["접수번호"]
                 _status = _row["_receipt_status"]
 
+                # ── 주문 상세 조회 (운송장번호) ──
+                _acct, _client = _client_for(_row["계정"])
+                _orig_invoice = ""
+                _orig_company = ""
+                _receiver_name = ""
+                _receiver_phone = ""
+                _orderer_name = ""
+                _orderer_phone = ""
+                if _client:
+                    _return_items = _row.get("_return_items", [])
+                    _sbid = _return_items[0].get("shipmentBoxId") if _return_items else None
+                    if _sbid:
+                        try:
+                            _order_detail = _client.get_ordersheet_by_shipment(int(_sbid))
+                            _od = _order_detail.get("data", {})
+                            _orig_invoice = _od.get("invoiceNumber", "")
+                            _orig_company = _od.get("deliveryCompanyName", "")
+                            _receiver = _od.get("receiver", {})
+                            _receiver_name = _receiver.get("name", "")
+                            _receiver_phone = _receiver.get("safeNumber", "")
+                            _orderer = _od.get("orderer", {})
+                            _orderer_name = _orderer.get("name", "")
+                            _orderer_phone = _orderer.get("safeNumber", "")
+                        except Exception:
+                            pass
+
+                # ── 배송 운송장 (한진택배 입력용) ──
+                if _orig_invoice:
+                    st.success(f"**배송 운송장: {_orig_company} {_orig_invoice}**")
+                    oi1, oi2 = st.columns(2)
+                    with oi1:
+                        st.write(f"**수취인:** {_receiver_name} / {_receiver_phone}")
+                    with oi2:
+                        st.write(f"**주문자:** {_orderer_name} / {_orderer_phone}")
+
                 # ── 상세 정보 ──
-                with st.expander(f"상세 — 접수번호 {_receipt_id}", expanded=True):
+                with st.expander(f"상세 — 접수번호 {_receipt_id}", expanded=False):
                     dc1, dc2, dc3 = st.columns(3)
                     dc1.write(f"**주문번호:** {_row['주문번호']}")
                     dc1.write(f"**유형:** {_row['유형']}")
@@ -393,7 +428,6 @@ def render(selected_account, accounts_df, account_names):
                 st.divider()
 
                 # ── 처리 액션 (상태에 따라) ──
-                _acct, _client = _client_for(_row["계정"])
 
                 # 반품접수 → 입고확인 + 회수송장
                 if _status == "RETURNS_UNCHECKED":
