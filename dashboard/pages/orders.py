@@ -941,8 +941,11 @@ def _render_hanjin_nfocus():
         _nfocus_disabled = (
             not _hanjin_creds.get("user_id")
             or _nfocus_file is None
-            or st.session_state.get("nfocus_running", False)
         )
+
+        if st.session_state.get("nfocus_running", False):
+            st.warning("이전 N-Focus 처리가 비정상 종료됨 — 상태 초기화됨")
+            st.session_state["nfocus_running"] = False
 
         if st.button(
             "한진 N-Focus 자동 처리",
