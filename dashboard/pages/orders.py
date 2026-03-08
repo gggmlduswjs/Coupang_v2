@@ -966,7 +966,14 @@ def _render_invoice_upload(instruct_all, accounts_df):
 
         # 한진 출력자료등록 엑셀 컬럼 확인
         _has_direct_cols = all(c in _inv_df.columns for c in ["묶음배송번호", "주문번호", "운송장번호"])
-        _has_hanjin_cols = "순번" in _inv_df.columns and "운송장번호" in _inv_df.columns
+        _has_hanjin_seq_cols = "순번" in _inv_df.columns and "운송장번호" in _inv_df.columns
+        # 원본List 형식: 순번 없이 운송장번호 + 받으시는 분
+        _recv_col_name = None
+        for _rc in ["받으시는 분", "받으시는분", "수취인", "수취인이름"]:
+            if _rc in _inv_df.columns:
+                _recv_col_name = _rc
+                break
+        _has_hanjin_name_cols = "운송장번호" in _inv_df.columns and _recv_col_name is not None
 
         _matched_df = None
 
@@ -975,12 +982,17 @@ def _render_invoice_upload(instruct_all, accounts_df):
             st.info("묶음배송번호/주문번호 컬럼 감지 → 직접 매칭 모드")
             _matched_df = _match_direct(_inv_df, instruct_all, accounts_df)
 
-        elif _has_hanjin_cols and _delivery_df is not None:
+        elif _has_hanjin_seq_cols and _delivery_df is not None:
             # 순번 매칭 (한진 출력자료등록 결과)
             st.info("한진 출력자료등록 형식 감지 → 순번 기반 자동 매칭 모드")
             _matched_df = _match_by_sequence(_inv_df, _delivery_df, accounts_df)
 
-        elif _has_hanjin_cols and _delivery_df is None:
+        elif _has_hanjin_name_cols and _delivery_df is not None:
+            # 수취인 이름 매칭 (원본List 형식 — 순번 없음)
+            st.info("한진 원본List 형식 감지 → 수취인 이름 기반 매칭 모드")
+            _matched_df = _match_by_name(_inv_df, _delivery_df, _recv_col_name, accounts_df)
+
+        elif (_has_hanjin_seq_cols or _has_hanjin_name_cols) and _delivery_df is None:
             st.warning("배송리스트가 세션에 없습니다. 먼저 '배송리스트 다운로드'를 실행하세요.")
             return
 
@@ -1172,6 +1184,60 @@ def _check_stop_shipment_requests(matched_df, accounts_df):
     _safe_df = _safe_df.drop(columns=["_oid_int"], errors="ignore")
 
     return _stop_df, _safe_df
+
+
+def _match_by_name(hanjin_df, delivery_df, recv_col, accounts_df):
+    """한진 원본List 엑셀 → 수취인 이름 + 운송장번호로 배송리스트와 매칭"""
+    _hj = hanjin_df.copy()
+
+    # 운송장번호 있는 행만
+    _hj = _hj[_hj["운송장번호"].notna() & (_hj["운송장번호"] != "")].copy()
+    if _hj.empty:
+        st.warning("운송장번호가 입력된 행이 없습니다.")
+        return None
+
+    _dl = delivery_df.copy()
+    _results = []
+    _match_ok = 0
+    _match_fail = 0
+    _used_dl_indices = set()
+
+    for _, _hr in _hj.iterrows():
+        _invoice = str(_hr["운송장번호"]).strip()
+        _hj_name = str(_hr[recv_col]).strip()
+
+        if not _hj_name or _hj_name == "nan":
+            _match_fail += 1
+            continue
+
+        # 배송리스트에서 같은 수취인 찾기 (미사용 행 중)
+        _candidates = _dl[
+            (_dl["수취인이름"].astype(str).str.strip() == _hj_name)
+            & (~_dl.index.isin(_used_dl_indices))
+        ]
+
+        if _candidates.empty:
+            st.warning(f"수취인 '{_hj_name}' 매칭 실패 (배송리스트에 없음)")
+            _match_fail += 1
+            continue
+
+        _dl_row = _candidates.iloc[0]
+        _used_dl_indices.add(_dl_row.name)
+
+        _results.append({
+            "묶음배송번호": _dl_row["묶음배송번호"],
+            "주문번호": _dl_row["주문번호"],
+            "운송장번호": _invoice,
+            "_account_id": _dl_row["_account_id"],
+            "_vendor_item_id": _dl_row["_vendor_item_id"],
+        })
+        _match_ok += 1
+
+    if _match_fail > 0:
+        st.warning(f"매칭 실패: {_match_fail}건")
+
+    st.info(f"수취인 이름 매칭 성공: {_match_ok}건")
+    return pd.DataFrame(_results) if _results else None
 
 
 def _match_by_sequence(hanjin_df, delivery_df, accounts_df):
