@@ -424,7 +424,8 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
                         # ── 1) 인벤토리 (가격/재고/판매상태) ──
                         try:
                             _inv_info = _wing_client.get_item_inventory(int(_sel_vid))
-                            _inv_data = _inv_info.get("data", _inv_info)
+                            # API가 직접 dict 또는 {"data": {...}} 형태로 응답
+                            _inv_data = _inv_info.get("data") if isinstance(_inv_info.get("data"), dict) else _inv_info
                             st.markdown("#### 가격/재고/판매상태")
                             _ri1, _ri2, _ri3 = st.columns(3)
                             _sale_p = _inv_data.get('salePrice')
@@ -433,8 +434,10 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
                             _ri2.metric("재고", f"{_stock:,}" if isinstance(_stock, (int, float)) else str(_stock or '-'))
                             _on_sale = _inv_data.get('onSale', _inv_data.get('salesStatus', _inv_data.get('status')))
                             _ri3.metric("판매상태", "판매중" if _on_sale is True else "중지" if _on_sale is False else str(_on_sale or '-'))
-                        except Exception:
-                            pass
+                        except CoupangWingError as e:
+                            st.warning(f"인벤토리 조회 실패: {e.message}")
+                        except Exception as e:
+                            st.warning(f"인벤토리 조회 실패: {e}")
 
                         # ── 2) 상품 상세 (get_product) ──
                         if _sel_spid and _sel_spid != "-":
