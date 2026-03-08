@@ -992,7 +992,7 @@ def _render_hanjin_nfocus():
                     with HanjinNFocusClient(
                         user_id=_hc["user_id"],
                         password=_hc["password"],
-                        headless=False,
+                        headless=True,
                     ) as client:
                         _nf_result = client.process_full_workflow(
                             excel_bytes=_nfocus_file.getvalue(),
