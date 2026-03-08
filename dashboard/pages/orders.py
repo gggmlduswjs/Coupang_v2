@@ -287,7 +287,12 @@ def render(selected_account, accounts_df, account_names):
     with _tab2:
         st.caption("확정된 주문의 전체 배송 업무: 발주서 → 극동 → 배송리스트 → 한진 → 송장등록")
 
-        _inst_by_box = get_instruct_by_box(_instruct_all)
+        _t2_acct = st.selectbox("계정", ["전체"] + account_names, key="t2_acct")
+        _t2_instruct = _instruct_all.copy() if not _instruct_all.empty else pd.DataFrame()
+        if not _t2_instruct.empty and _t2_acct != "전체":
+            _t2_instruct = _t2_instruct[_t2_instruct["계정"] == _t2_acct]
+
+        _inst_by_box = get_instruct_by_box(_t2_instruct)
 
         # KPI
         _inst_total = len(_inst_by_box)
@@ -296,7 +301,7 @@ def render(selected_account, accounts_df, account_names):
         _ik1.metric("상품준비중 주문", f"{_inst_total:,}건")
         _ik2.metric("총 금액", f"₩{fmt_krw_short(_inst_amount)}")
 
-        if _instruct_all.empty:
+        if _t2_instruct.empty:
             st.info("상품준비중(INSTRUCT) 상태의 주문이 없습니다.")
         else:
             # 2-1. 주문 확인 그리드
@@ -312,19 +317,19 @@ def render(selected_account, accounts_df, account_names):
             st.divider()
 
             # 2-2. 발주서 생성
-            _render_purchase_order(_instruct_all, accounts_df)
+            _render_purchase_order(_t2_instruct, accounts_df)
 
             # 2-3. 극동 엑셀
-            _render_geukdong_excel(_instruct_all, accounts_df)
+            _render_geukdong_excel(_t2_instruct, accounts_df)
 
             # 2-4. 배송리스트 다운로드
-            _render_delivery_list(_instruct_all)
+            _render_delivery_list(_t2_instruct)
 
             # 2-5. 한진 N-Focus 송장 발급
             _render_hanjin_nfocus()
 
             # 2-6. 쿠팡 송장 등록
-            _render_invoice_upload(_instruct_all, accounts_df)
+            _render_invoice_upload(_t2_instruct, accounts_df)
 
     # ══════════════════════════════════════
     # 탭3: 배송현황
