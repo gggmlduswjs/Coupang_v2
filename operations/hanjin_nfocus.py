@@ -249,16 +249,32 @@ class HanjinNFocusClient:
 
     # ── 전체 워크플로우 ──
 
+    def take_screenshot(self) -> Optional[bytes]:
+        """현재 페이지 스크린샷을 bytes로 반환"""
+        try:
+            if self._page:
+                return self._page.screenshot(type="png")
+        except Exception:
+            pass
+        return None
+
     def process_full_workflow(
         self,
         excel_bytes: bytes,
         filename: str,
         progress_callback: Optional[Callable[[str], None]] = None,
+        screenshot_callback: Optional[Callable[[bytes], None]] = None,
     ) -> dict:
         def _p(msg: str):
             logger.info(msg)
             if progress_callback:
                 progress_callback(msg)
+
+        def _ss():
+            if screenshot_callback:
+                img = self.take_screenshot()
+                if img:
+                    screenshot_callback(img)
 
         result = {
             "success": False,
@@ -271,15 +287,18 @@ class HanjinNFocusClient:
 
         _p("1/5 N-Focus 로그인 중...")
         self.login()
+        _ss()
 
         _p("2/5 배송리스트 업로드 중...")
         self.upload_delivery_list(excel_bytes, filename)
+        _ss()
 
         _p("3/5 오류 체크 중...")
         err = self.check_errors()
         result["normal"] = err["normal"]
         result["error"] = err["error"]
         result["error_details"] = err["error_details"]
+        _ss()
 
         if result["error"] > 0:
             _p(f"오류 {result['error']}건 발견 — 정상 건만 출력합니다.")
@@ -288,10 +307,12 @@ class HanjinNFocusClient:
             _p(f"4/5 오류 건 제외 출력 중 ({result['normal']}건)...")
             reg = self.register_shipments(expected_normal=result["normal"])
             result["registered"] = reg["registered"]
+            _ss()
 
             _p("5/5 운송장 엑셀 다운로드 중...")
             raw = self.download_invoice_excel()
             result["invoice_excel"] = self._normalize_invoice_columns(raw)
+            _ss()
         else:
             _p("정상 건이 없어 출력을 건너뜁니다.")
 

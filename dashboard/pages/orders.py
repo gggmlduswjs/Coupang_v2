@@ -988,7 +988,11 @@ def _render_hanjin_nfocus():
                 from operations.hanjin_nfocus import HanjinNFocusClient
 
                 _hc = _load_hanjin_creds()
+                _ss_placeholder = st.empty()
                 with st.status("N-Focus 처리 중...", expanded=True) as status:
+                    def _show_screenshot(img_bytes):
+                        _ss_placeholder.image(img_bytes, caption="N-Focus 실시간 화면", use_container_width=True)
+
                     with HanjinNFocusClient(
                         user_id=_hc["user_id"],
                         password=_hc["password"],
@@ -998,6 +1002,7 @@ def _render_hanjin_nfocus():
                             excel_bytes=_nfocus_file.getvalue(),
                             filename=_nfocus_file.name,
                             progress_callback=lambda msg: st.write(msg),
+                            screenshot_callback=_show_screenshot,
                         )
 
                     if _nf_result["success"]:
