@@ -344,10 +344,12 @@ def _render_detail(sel, account_id, account_name, _wing_client):
                     _img_url = _first.get("url", _first) if isinstance(_first, dict) else _first
         except Exception:
             pass
-        # dict이면 cdnPath/vendorPath에서 URL 추출
+        # dict이면 cdnPath에서 URL 추출
         if _img_url and isinstance(_img_url, dict):
             _img_url = _img_url.get("cdnPath") or _img_url.get("vendorPath") or _img_url.get("url") or _img_url.get("imageUrl") or ""
-        # http URL만 표시, 상대경로(vendor_inventory/...)는 외부 접근 불가
+        # 상대경로면 쿠팡 CDN 프리픽스 추가
+        if _img_url and isinstance(_img_url, str) and not _img_url.startswith("http"):
+            _img_url = f"https://image6.coupangcdn.com/image/{_img_url}"
         if _img_url and isinstance(_img_url, str) and _img_url.startswith("http"):
             st.image(_img_url, width=180)
         else:
