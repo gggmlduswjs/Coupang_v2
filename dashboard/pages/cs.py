@@ -256,11 +256,14 @@ def render(selected_account, accounts_df, account_names):
                             st.markdown(f"> {cm.get('content', '')}")
                             st.caption(f"— {cm.get('inquiryCommentAt', '')[:19]}")
 
-                # 답변 작성 (미답변만)
-                if _row["답변상태"] == "미답변":
+                # 답변 작성 (미답변 + 행 선택 시)
+                if _row["답변상태"] == "미답변" and _sel_rows:
                     st.markdown("---")
                     st.subheader("답변 작성")
-                    _reply_acct = st.selectbox("답변 계정", account_names, key="cs_online_reply_acct")
+                    st.info(f"**[문의 {_sel_id}]** {_row['문의내용'][:100]}")
+                    # 답변 계정: 해당 문의의 계정으로 자동 선택
+                    _default_acct_idx = account_names.index(_row["계정"]) if _row["계정"] in account_names else 0
+                    _reply_acct = st.selectbox("답변 계정", account_names, index=_default_acct_idx, key="cs_online_reply_acct")
                     _reply_content = st.text_area("답변 내용", key="cs_online_reply_content", height=100)
 
                     if st.button("답변 등록", type="primary", key="btn_online_reply"):
@@ -348,14 +351,16 @@ def render(selected_account, accounts_df, account_names):
                             st.markdown(f"> {r.get('content', '')}")
                             st.markdown("")
 
-                # 답변/확인 처리
-                if _cc_row.get("_inquiry_status") == "progress":
+                # 답변/확인 처리 (행 선택 시만)
+                if _cc_sel_rows and _cc_row.get("_inquiry_status") == "progress":
                     _last_agent = _cc_row.get("_last_agent_reply")
 
                     if _cc_row["_status"] == "requestAnswer" and _last_agent:
                         st.markdown("---")
                         st.subheader("답변 작성")
-                        _cc_reply_acct = st.selectbox("답변 계정", account_names, key="cs_cc_reply_acct")
+                        st.info(f"**[상담 {_cc_sel}]** {_cc_row.get('상품명', '')} — {_cc_row.get('문의유형', '')}")
+                        _cc_default_idx = account_names.index(_cc_row["계정"]) if _cc_row["계정"] in account_names else 0
+                        _cc_reply_acct = st.selectbox("답변 계정", account_names, index=_cc_default_idx, key="cs_cc_reply_acct")
                         _cc_content = st.text_area("답변 내용 (2~1000자)", key="cs_cc_content", height=100)
                         _parent_id = _last_agent.get("answerId")
 
@@ -389,7 +394,8 @@ def render(selected_account, accounts_df, account_names):
                         st.markdown("---")
                         st.subheader("문의 확인 처리")
                         st.caption("쿠팡이 상담 완료한 이관건 — 판매자 확인 처리")
-                        _confirm_acct = st.selectbox("확인 계정", account_names, key="cs_cc_confirm_acct")
+                        _cc_confirm_idx = account_names.index(_cc_row["계정"]) if _cc_row["계정"] in account_names else 0
+                        _confirm_acct = st.selectbox("확인 계정", account_names, index=_cc_confirm_idx, key="cs_cc_confirm_acct")
 
                         if st.button("확인 처리", type="primary", key="btn_cc_confirm"):
                             _cf_account = None
