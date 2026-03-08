@@ -350,9 +350,11 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
                             _img_url = _imgs[0]
                 except Exception:
                     pass
-                if _img_url and isinstance(_img_url, str):
-                    if not _img_url.startswith("http"):
-                        _img_url = f"https://thumbnail7.coupangcdn.com/thumbnails/remote/292x292ex/{_img_url}"
+                # dict이면 URL 추출
+                if _img_url and isinstance(_img_url, dict):
+                    _img_url = _img_url.get("cdnPath") or _img_url.get("vendorPath") or _img_url.get("url") or ""
+                # http URL만 표시, 상대경로는 외부 접근 불가
+                if _img_url and isinstance(_img_url, str) and _img_url.startswith("http"):
                     st.image(_img_url, width=180)
                 else:
                     st.markdown('<div style="width:180px;height:240px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;border-radius:8px;color:#bbb;font-size:48px;">📖</div>', unsafe_allow_html=True)
@@ -508,9 +510,7 @@ def render_tab_list(account_id, selected_account, accounts_df, _wing_client):
                                             _img_cols = st.columns(min(len(_images), 5))
                                             for _idx, _img in enumerate(_images[:5]):
                                                 _url = _img.get("cdnPath", _img.get("vendorPath", ""))
-                                                if _url and not _url.startswith("http"):
-                                                    _url = f"https://thumbnail7.coupangcdn.com/thumbnails/remote/292x292ex/{_url}"
-                                                if _url:
+                                                if _url and _url.startswith("http"):
                                                     _img_cols[_idx].image(_url, caption=_img.get("imageType", ""), width=150)
 
                                     # 고시정보
