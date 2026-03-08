@@ -129,19 +129,47 @@ def render(selected_account, accounts_df, account_names):
         if _t1_data.empty:
             st.info("결제완료(ACCEPT) 상태의 주문이 없습니다.")
         else:
-            # ── 체크박스 포함 AgGrid ──
-            _accept_display = _t1_data[["계정", "묶음배송번호", "주문번호", "상품명", "옵션명", "수량", "결제금액", "주문일", "수취인"]].copy()
+            # ── 쿠팡 윙 스타일 컬럼 + 체크박스 AgGrid ──
+            _accept_display = _t1_data.copy()
+            # 등록상품명/옵션/수량 합친 컬럼
+            _accept_display["상품/옵션/수량"] = _accept_display.apply(
+                lambda r: f"{r['상품명']} / {r['옵션명']} / {int(r['수량'])}권", axis=1
+            )
+            # 수취인/연락처
+            _accept_display["수취인/연락처"] = _accept_display.apply(
+                lambda r: f"{r['수취인']}" + (f" ({r['수취인전화번호']})" if r.get('수취인전화번호') else ""), axis=1
+            )
+            # 배송상태 한글
+            _accept_display["배송상태"] = _accept_display["상태"].map(STATUS_MAP)
+            # 결제금액 포맷
             _accept_display["결제금액"] = _accept_display["결제금액"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
 
-            gb = GridOptionsBuilder.from_dataframe(_accept_display)
+            _display_cols = [
+                "주문번호", "분리배송가능", "택배사", "운송장번호", "주문시출고예정일",
+                "상품/옵션/수량", "수취인/연락처", "수취인주소", "배송상태",
+                "주문일시", "묶음배송번호", "계정", "결제금액",
+            ]
+            _grid_df = _accept_display[_display_cols].rename(columns={
+                "분리배송가능": "분리배송", "주문시출고예정일": "출고예정일", "수취인주소": "배송지",
+            })
+
+            gb = GridOptionsBuilder.from_dataframe(_grid_df)
             gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)
             gb.configure_default_column(resizable=True, sorteable=True, filterable=True)
-            gb.configure_column("상품명", width=250)
-            gb.configure_column("옵션명", width=200)
-            gb.configure_selection("multiple", use_checkbox=True, pre_selected_rows=list(range(len(_accept_display))))
+            gb.configure_column("상품/옵션/수량", width=350)
+            gb.configure_column("배송지", width=250)
+            gb.configure_column("수취인/연락처", width=130)
+            gb.configure_column("주문번호", width=120)
+            gb.configure_column("묶음배송번호", width=120)
+            gb.configure_column("주문일시", width=140)
+            gb.configure_selection(
+                "multiple", use_checkbox=True,
+                header_checkbox=True,
+                pre_selected_rows=list(range(len(_grid_df))),
+            )
             grid_opts = gb.build()
             _grid_result = AgGrid(
-                _accept_display, gridOptions=grid_opts, height=500, theme="streamlit",
+                _grid_df, gridOptions=grid_opts, height=500, theme="streamlit",
                 key="tab1_accept_grid", update_mode="SELECTION_CHANGED",
             )
 
