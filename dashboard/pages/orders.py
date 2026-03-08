@@ -123,9 +123,9 @@ def render(selected_account, accounts_df, account_names):
         if not _t1_data.empty and _t1_acct != "전체":
             _t1_data = _t1_data[_t1_data["계정"] == _t1_acct]
 
-        _accept_total = len(_t1_data)
+        _accept_total = _t1_data["묶음배송번호"].nunique() if not _t1_data.empty else 0
         _accept_amount = int(_t1_data["결제금액"].sum()) if not _t1_data.empty else 0
-        _accept_by_acct = _t1_data.groupby("계정").size().to_dict() if not _t1_data.empty else {}
+        _accept_by_acct = _t1_data.groupby("계정")["묶음배송번호"].nunique().to_dict() if not _t1_data.empty else {}
 
         _ak1, _ak2, _ak3 = st.columns(3)
         _ak1.metric("결제완료 주문", f"{_accept_total:,}건")
