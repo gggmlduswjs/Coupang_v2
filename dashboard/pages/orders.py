@@ -304,13 +304,13 @@ def render(selected_account, accounts_df, account_names):
             with _po_col1:
                 st.caption("INSTRUCT(상품준비중) 주문 기반 · 배송 처리하면 자동으로 사라짐")
             with _po_col2:
-                if _can_call_api:
+                if can_call_api():
                     if st.button("🔄 주문 새로고침", key="btn_po_sync", use_container_width=True, type="primary"):
                         with st.spinner("INSTRUCT 주문 동기화 중..."):
-                            _synced = _sync_live_orders()
+                            _synced = sync_live_orders(accounts_df)
+                        clear_order_caches()
                         st.success(f"완료 — {_synced}건 갱신")
-                    load_all_orders_from_db.clear()
-                    st.rerun()
+                        st.rerun()
             with _po_col3:
                 st.caption("2시간마다 자동 동기화")
 

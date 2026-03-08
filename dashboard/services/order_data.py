@@ -24,7 +24,6 @@ STATUS_MAP = {
 }
 
 
-@st.cache_data(ttl=30)
 def load_all_orders_from_db():
     """DB에서 활성 주문(전체) + 배송완료(30일) 조회"""
     _from = (date.today() - timedelta(days=30)).isoformat()
@@ -135,8 +134,7 @@ def get_instruct_by_box(instruct_all):
 
 
 def clear_order_caches():
-    """캐시 초기화"""
-    load_all_orders_from_db.clear()
+    """캐시 초기화 (현재 캐시 미사용, st.rerun으로 갱신)"""
     st.cache_data.clear()
 
 
