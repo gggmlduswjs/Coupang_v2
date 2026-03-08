@@ -1,4 +1,6 @@
 """상품 관리 페이지 — V4 (탭별 모듈 분할)"""
+import io
+
 import streamlit as st
 import pandas as pd
 
@@ -72,6 +74,80 @@ def render(selected_account, accounts_df, account_names):
         """)
         if not pub_df.empty:
             st.dataframe(fmt_money_df(pub_df), use_container_width=True, hide_index=True)
+
+    # ── 전체 상품 (중복 제거) ──
+    with st.expander("전체 상품 목록 (계정 중복 제거)", expanded=False):
+        _all_listings = query_df("""
+            SELECT l.isbn,
+                   l.product_name AS 상품명,
+                   l.option_name AS 옵션명,
+                   l.original_price AS 정가,
+                   l.sale_price AS 판매가,
+                   l.stock_quantity AS 재고,
+                   l.coupang_status AS 상태,
+                   COALESCE(b.title, '') AS DB도서명,
+                   COALESCE(pub.name, '') AS 출판사,
+                   COALESCE(pub.supply_rate, 0) AS 공급률,
+                   COALESCE(pub.margin_rate, 0) AS "매입율",
+                   l.coupang_product_id,
+                   COUNT(*) OVER (PARTITION BY COALESCE(NULLIF(l.isbn,''), l.product_name)) AS 계정수
+            FROM listings l
+            LEFT JOIN books b ON l.isbn = b.isbn AND l.isbn IS NOT NULL AND l.isbn != ''
+            LEFT JOIN publishers pub ON b.publisher_id = pub.id
+            WHERE l.coupang_status = 'active'
+            ORDER BY COALESCE(pub.name, 'zzz'), l.product_name
+        """)
+
+        if _all_listings.empty:
+            st.info("등록된 상품이 없습니다.")
+        else:
+            # ISBN 기준 중복 제거 (ISBN 없으면 상품명 기준)
+            _all_listings["_dedup_key"] = _all_listings.apply(
+                lambda r: str(r["isbn"]).strip() if pd.notna(r["isbn"]) and str(r["isbn"]).strip() else str(r["상품명"]).strip(),
+                axis=1,
+            )
+            _unique = _all_listings.drop_duplicates(subset=["_dedup_key"], keep="first").copy()
+
+            # 출판사 필터
+            _pub_list = sorted(_unique["출판사"].unique())
+            _pub_filter = st.multiselect(
+                "출판사 필터", _pub_list, default=_pub_list, key="prod_all_pub_filter",
+            )
+            if _pub_filter:
+                _unique = _unique[_unique["출판사"].isin(_pub_filter)]
+
+            # KPI
+            _uk1, _uk2, _uk3 = st.columns(3)
+            _uk1.metric("고유 상품", f"{len(_unique):,}종")
+            _uk2.metric("출판사", f"{_unique['출판사'].nunique()}개")
+            _uk3.metric("총 재고", f"{int(_unique['재고'].sum()):,}권")
+
+            # 표시용 정리
+            _show_cols = ["출판사", "상품명", "isbn", "정가", "판매가", "재고", "계정수"]
+            _show_df = _unique[_show_cols].copy()
+            _show_df = _show_df.rename(columns={"isbn": "ISBN"})
+            _show_df["정가"] = _show_df["정가"].apply(lambda x: f"{int(x):,}" if pd.notna(x) and x else "0")
+            _show_df["판매가"] = _show_df["판매가"].apply(lambda x: f"{int(x):,}" if pd.notna(x) and x else "0")
+
+            st.dataframe(_show_df, use_container_width=True, hide_index=True, height=500)
+
+            # 엑셀 다운로드
+            _xl_cols = ["출판사", "상품명", "ISBN", "정가", "판매가", "재고", "계정수"]
+            _xl_df = _unique[["출판사", "상품명", "isbn", "정가", "판매가", "재고", "계정수"]].copy()
+            _xl_df = _xl_df.rename(columns={"isbn": "ISBN"})
+            _xl_buf = io.BytesIO()
+            with pd.ExcelWriter(_xl_buf, engine="openpyxl") as writer:
+                _xl_df.to_excel(writer, sheet_name="전체상품", index=False)
+            _xl_buf.seek(0)
+            st.download_button(
+                f"엑셀 다운로드 ({len(_unique)}종)",
+                _xl_buf.getvalue(),
+                file_name="쿠팡_전체상품.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="prod_all_xlsx_dl",
+                type="primary",
+                use_container_width=True,
+            )
 
     st.divider()
 
