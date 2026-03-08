@@ -941,8 +941,7 @@ def _render_hanjin_nfocus():
 3. 출력자료등록 엑셀 다운로드
 4. 아래 '쿠팡 송장 등록'에서 해당 엑셀 업로드 → 자동 매칭 → 쿠팡 등록
         """)
-        st.link_button("한진 N-Focus 접속", "https://focus.hanjin.com/login", type="primary", use_container_width=True)
-        st.link_button("한진 N-Focus 출력자료등록", "https://focus.hanjin.com/release/listup", use_container_width=True)
+        st.link_button("한진 N-Focus 열기", "https://focus.hanjin.com/release/listup", type="primary", use_container_width=True)
 
 
 def _render_invoice_upload(instruct_all, accounts_df):
