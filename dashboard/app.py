@@ -58,6 +58,7 @@ accounts_df = query_df("""
 """)
 account_names = accounts_df["account_name"].tolist() if not accounts_df.empty else []
 
+st.sidebar.divider()
 page = st.sidebar.radio("메뉴", ["Wing 바로가기", "주문/배송", "반품", "CS", "상품"], key="sidebar_menu")
 
 if os.environ.get("RAILWAY_ENVIRONMENT"):
