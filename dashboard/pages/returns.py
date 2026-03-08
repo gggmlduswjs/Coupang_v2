@@ -283,7 +283,7 @@ def render(selected_account, accounts_df, account_names):
     st.title("반품/교환 관리")
 
     # ── 상단 컨트롤 ──
-    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 2])
+    c1, c2 = st.columns([2, 5])
     with c1:
         if st.button("새로고침", key="btn_ret_refresh", use_container_width=True,
                      type="primary", help="WING API에서 실시간 반품/교환 조회"):
@@ -292,62 +292,33 @@ def render(selected_account, accounts_df, account_names):
     with c2:
         _last = st.session_state.get("returns_last_synced")
         if _last:
-            st.caption(f"마지막 조회: {_last}")
+            st.caption(f"마지막 조회: {_last} (WING API 실시간)")
         else:
             st.caption("WING API 실시간")
-    with c3:
-        _ret_status_filter = st.selectbox("상태", ["전체"] + list(_STATUS_MAP.values()), key="ret_status")
-    with c4:
-        _ret_type_filter = st.selectbox("유형", ["전체", "반품", "취소"], key="ret_type")
-    with c5:
-        _ret_fault_filter = st.selectbox("귀책", ["전체", "고객", "셀러", "쿠팡"], key="ret_fault")
 
     # ── 데이터 로드 (실시간 API) ──
     _all = _load_returns_live(accounts_df, days=31)
 
-    if _all.empty:
-        st.info("반품/취소 건이 없습니다. '새로고침'을 눌러 조회하세요.")
-
-    # ── 필터 적용 ──
-    df = _all.copy() if not _all.empty else pd.DataFrame()
-    if not df.empty:
-        if _ret_status_filter != "전체":
-            df = df[df["상태"] == _ret_status_filter]
-        if _ret_type_filter != "전체":
-            df = df[df["유형"] == _ret_type_filter]
-        if _ret_fault_filter != "전체":
-            df = df[df["귀책"] == _ret_fault_filter]
+    # ── 미처리 건수 계산 ──
+    _pending = _all[_all["_receipt_status"].isin(["RELEASE_STOP_UNCHECKED", "RETURNS_UNCHECKED"])] if not _all.empty and "_receipt_status" in _all.columns else pd.DataFrame()
+    _warehouse = _all[_all["_receipt_status"] == "VENDOR_WAREHOUSE_CONFIRM"] if not _all.empty and "_receipt_status" in _all.columns else pd.DataFrame()
+    _completed = _all[_all["_receipt_status"] == "RETURNS_COMPLETED"] if not _all.empty and "_receipt_status" in _all.columns else pd.DataFrame()
 
     # ── KPI 카드 ──
-    _total = len(df)
-    _pending = len(df[df["_receipt_status"].isin(["RELEASE_STOP_UNCHECKED", "RETURNS_UNCHECKED"])]) if not df.empty and "_receipt_status" in df.columns else 0
-    _warehouse = len(df[df["_receipt_status"] == "VENDOR_WAREHOUSE_CONFIRM"]) if not df.empty and "_receipt_status" in df.columns else 0
-    _completed = len(df[df["_receipt_status"] == "RETURNS_COMPLETED"]) if not df.empty and "_receipt_status" in df.columns else 0
-
-    # 귀책 분포 (필터 전 전체 기준)
-    _cust = len(_all[_all["귀책"] == "고객"]) if not _all.empty else 0
-    _vendor = len(_all[_all["귀책"] == "셀러"]) if not _all.empty else 0
-    _coup = len(_all[_all["귀책"] == "쿠팡"]) if not _all.empty else 0
-
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("조회 건수", f"{_total:,}건")
-    k2.metric("미처리", f"{_pending:,}건")
-    k3.metric("입고확인 대기", f"{_warehouse:,}건")
-    k4.metric("처리완료", f"{_completed:,}건")
-    _fault_text = f"고객 {_cust} / 셀러 {_vendor}" + (f" / 쿠팡 {_coup}" if _coup else "")
-    k5.metric("귀책 분포", _fault_text if (_cust + _vendor + _coup) > 0 else "-")
-
-    # 배송비 합계
-    if not df.empty and "배송비" in df.columns:
-        _seller_charge = int(df[df["배송비"] > 0]["배송비"].sum())
-        _customer_charge = int(df[df["배송비"] < 0]["배송비"].abs().sum())
-        if _seller_charge > 0 or _customer_charge > 0:
-            st.caption(f"셀러 부담: {_seller_charge:,}원 / 고객 부담: {_customer_charge:,}원")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("미처리", f"{len(_pending):,}건")
+    k2.metric("입고확인 대기", f"{len(_warehouse):,}건")
+    k3.metric("처리완료", f"{len(_completed):,}건")
+    k4.metric("전체", f"{len(_all):,}건" if not _all.empty else "0건")
 
     st.divider()
 
     # ── 탭 ──
-    tab1, tab2, tab3, tab4 = st.tabs(["반품 목록", "반품 처리", "회수 송장 등록", "교환"])
+    tab1, tab2, tab3 = st.tabs([
+        f"미처리 ({len(_pending)})",
+        "전체 내역",
+        "교환",
+    ])
 
     # ── 헬퍼: 계정명으로 client 생성 ──
     def _client_for(acct_name):
@@ -359,209 +330,222 @@ def render(selected_account, accounts_df, account_names):
         _acct = accounts_df[_m].iloc[0]
         return _acct, create_wing_client(_acct)
 
-    # ── 탭1: 반품 목록 ──
+    # ══════════════════════════════════════════════
+    # 탭1: 미처리 (반품접수 + 출고중지 + 승인대기)
+    # ══════════════════════════════════════════════
     with tab1:
-        if df.empty:
-            st.info("해당 조건의 반품/취소 건이 없습니다.")
+        # 미처리 = 반품접수 + 출고중지 + 승인대기 합침
+        _actionable = _all[_all["_receipt_status"].isin([
+            "RELEASE_STOP_UNCHECKED", "RETURNS_UNCHECKED", "VENDOR_WAREHOUSE_CONFIRM",
+        ])] if not _all.empty else pd.DataFrame()
+
+        if _actionable.empty:
+            st.info("미처리 반품 건이 없습니다.")
         else:
-            _display_cols = [
+            _act_cols = [
                 "계정", "접수번호", "주문번호", "유형", "상태", "접수일",
-                "상품명", "사유분류", "수량", "배송비", "귀책", "요청자",
-                "출고중지상태", "회수종류", "선환불", "회수송장",
+                "상품명", "사유분류", "수량", "귀책", "요청자", "회수종류", "선환불",
             ]
-            _show = df[[c for c in _display_cols if c in df.columns]].copy()
-            _show["배송비"] = _show["배송비"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
-
-            _evt1 = st.dataframe(
-                _show.reset_index(drop=True), use_container_width=True, hide_index=True, height=500,
-                selection_mode="single-row", on_select="rerun", key="ret_list_table",
+            _act_show = _actionable[[c for c in _act_cols if c in _actionable.columns]].reset_index(drop=True)
+            _act_evt = st.dataframe(
+                _act_show, use_container_width=True, hide_index=True, height=400,
+                selection_mode="single-row", on_select="rerun", key="ret_action_table",
             )
+            _act_sel = _act_evt.selection.rows if _act_evt and _act_evt.selection else []
 
-            _sel1 = _evt1.selection.rows if _evt1 and _evt1.selection else []
-            _sel1_idx = _sel1[0] if _sel1 else 0
-            _detail_row = df.iloc[_sel1_idx]
-            _sel_detail = _detail_row["접수번호"]
+            if _act_sel:
+                _row = _actionable.iloc[_act_sel[0]]
+                _receipt_id = _row["접수번호"]
+                _status = _row["_receipt_status"]
 
-            with st.expander(f"상세 — 접수번호 {_sel_detail}", expanded=bool(_sel1)):
-                dc1, dc2, dc3 = st.columns(3)
-                dc1.write(f"**주문번호:** {_detail_row['주문번호']}")
-                dc1.write(f"**유형:** {_detail_row['유형']}")
-                dc1.write(f"**상태:** {_detail_row['상태']}")
-                dc2.write(f"**요청자:** {_detail_row['요청자']}")
-                dc2.write(f"**귀책:** {_detail_row['귀책']}")
-                dc2.write(f"**선환불:** {_detail_row['선환불']}")
-                dc3.write(f"**출고중지상태:** {_detail_row.get('출고중지상태', '-')}")
-                dc3.write(f"**회수종류:** {_detail_row.get('회수종류', '-')}")
-                dc3.write(f"**배송비:** {_detail_row['배송비']}")
+                # ── 상세 정보 ──
+                with st.expander(f"상세 — 접수번호 {_receipt_id}", expanded=True):
+                    dc1, dc2, dc3 = st.columns(3)
+                    dc1.write(f"**주문번호:** {_row['주문번호']}")
+                    dc1.write(f"**유형:** {_row['유형']}")
+                    dc1.write(f"**상태:** {_row['상태']}")
+                    dc2.write(f"**요청자:** {_row['요청자']}")
+                    dc2.write(f"**귀책:** {_row['귀책']}")
+                    dc2.write(f"**선환불:** {_row['선환불']}")
+                    dc3.write(f"**출고중지상태:** {_row.get('출고중지상태', '-')}")
+                    dc3.write(f"**회수종류:** {_row.get('회수종류', '-')}")
+                    dc3.write(f"**계정:** {_row['계정']}")
 
-                st.write(f"**사유:** {_detail_row.get('사유분류', '')} > {_detail_row.get('사유상세', '')} | {_detail_row.get('사유코드', '')}")
-                if _detail_row.get("비고"):
-                    st.write(f"**비고:** {_detail_row['비고']}")
+                    st.write(f"**사유:** {_row.get('사유분류', '')} > {_row.get('사유상세', '')} | {_row.get('사유코드', '')}")
+                    if _row.get("비고"):
+                        st.write(f"**비고:** {_row['비고']}")
 
-                items = _detail_row.get("_return_items", [])
-                if items:
-                    st.write("**반품 아이템:**")
-                    item_rows = []
-                    for ri in items:
-                        item_rows.append({
-                            "상품명": ri.get("sellerProductName", ""),
-                            "옵션명": ri.get("vendorItemName", ""),
-                            "옵션ID": ri.get("vendorItemId", ""),
-                            "주문수량": ri.get("purchaseCount", 0),
-                            "취소수량": ri.get("cancelCount", 0),
-                            "출고상태": _RELEASE_STATUS_MAP.get(ri.get("releaseStatus", ""), ri.get("releaseStatus", "")),
-                        })
-                    st.dataframe(pd.DataFrame(item_rows), use_container_width=True, hide_index=True)
+                    items = _row.get("_return_items", [])
+                    if items:
+                        st.write("**반품 아이템:**")
+                        item_rows = []
+                        for ri in items:
+                            item_rows.append({
+                                "상품명": ri.get("sellerProductName", ""),
+                                "옵션명": ri.get("vendorItemName", ""),
+                                "옵션ID": ri.get("vendorItemId", ""),
+                                "주문수량": ri.get("purchaseCount", 0),
+                                "취소수량": ri.get("cancelCount", 0),
+                                "출고상태": _RELEASE_STATUS_MAP.get(ri.get("releaseStatus", ""), ri.get("releaseStatus", "")),
+                            })
+                        st.dataframe(pd.DataFrame(item_rows), use_container_width=True, hide_index=True)
 
-                if _detail_row.get("회수송장"):
-                    st.write(f"**회수송장:** {_detail_row['회수송장']}")
+                st.divider()
 
-            st.download_button(
-                "CSV 다운로드",
-                _show.to_csv(index=False, encoding="utf-8-sig"),
-                file_name=f"returns_{date.today().isoformat()}.csv",
-                mime="text/csv",
-                key="ret_csv_dl",
-            )
+                # ── 처리 액션 (상태에 따라) ──
+                _acct, _client = _client_for(_row["계정"])
 
-    # ── 탭2: 반품 처리 ──
+                # 반품접수 → 입고확인 + 회수송장
+                if _status == "RETURNS_UNCHECKED":
+                    act1, act2 = st.columns(2)
+                    with act1:
+                        st.markdown("**입고 확인**")
+                        if st.button("입고 확인 처리", type="primary", key="btn_confirm"):
+                            if _client:
+                                try:
+                                    _client.confirm_return_receipt(int(_receipt_id))
+                                    st.success(f"입고 확인 완료: {_receipt_id}")
+                                    _clear_return_cache()
+                                except CoupangWingError as e:
+                                    st.error(f"API 오류: {e}")
+                            else:
+                                st.error("WING API 클라이언트 생성 불가")
+
+                    with act2:
+                        st.markdown("**회수 송장 등록**")
+                        _sel_company = st.selectbox(
+                            "택배사", list(_DELIVERY_COMPANIES.keys()),
+                            format_func=lambda x: f"{_DELIVERY_COMPANIES[x]} ({x})",
+                            key="sel_inv_company",
+                            index=list(_DELIVERY_COMPANIES.keys()).index("HANJIN"),
+                        )
+                        _inv_num = st.text_input("운송장번호", key="inv_number")
+                        if st.button("회수 송장 등록", type="secondary", key="btn_create_invoice"):
+                            if not _inv_num.strip():
+                                st.error("운송장번호를 입력하세요.")
+                            elif _client:
+                                try:
+                                    _client.create_return_invoice(
+                                        receipt_id=int(_receipt_id),
+                                        delivery_company_code=_sel_company,
+                                        invoice_number=_inv_num.strip(),
+                                        delivery_type="RETURN",
+                                    )
+                                    st.success(f"회수 송장 등록 완료: {_DELIVERY_COMPANIES.get(_sel_company, _sel_company)} {_inv_num}")
+                                    _clear_return_cache()
+                                except CoupangWingError as e:
+                                    st.error(f"API 오류: {e}")
+                            else:
+                                st.error("WING API 클라이언트 생성 불가")
+
+                # 승인대기 → 반품 승인
+                elif _status == "VENDOR_WAREHOUSE_CONFIRM":
+                    st.markdown("**반품 승인 (환불)**")
+                    st.caption("빠른환불 대상은 자동 처리됩니다.")
+                    if st.button("반품 승인", type="primary", key="btn_approve"):
+                        if _client:
+                            try:
+                                _cancel_count = int(_row["수량"]) if pd.notna(_row["수량"]) and int(_row["수량"]) > 0 else 1
+                                _client.approve_return_request(int(_receipt_id), cancel_count=_cancel_count)
+                                st.success(f"반품 승인 완료: {_receipt_id}")
+                                _clear_return_cache()
+                            except CoupangWingError as e:
+                                st.error(f"API 오류: {e}")
+                        else:
+                            st.error("WING API 클라이언트 생성 불가")
+
+                # 출고중지 요청
+                elif _status == "RELEASE_STOP_UNCHECKED":
+                    st.warning(f"출고중지 요청 건입니다. 출고중지상태: {_row.get('출고중지상태', '-')}")
+            else:
+                st.caption("테이블에서 처리할 건을 선택하세요.")
+
+    # ══════════════════════════════════════════════
+    # 탭2: 전체 내역
+    # ══════════════════════════════════════════════
     with tab2:
         if _all.empty:
-            st.info("반품 데이터가 없습니다.")
+            st.info("반품/취소 건이 없습니다.")
         else:
-            # ── 입고 확인 대기 ──
-            st.subheader("입고 확인 대기")
-            st.caption("반품접수(RETURNS_UNCHECKED) → 입고확인")
-            _unchecked = _all[_all["_receipt_status"] == "RETURNS_UNCHECKED"]
+            # 필터
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                _ret_status_filter = st.selectbox("상태", ["전체"] + list(_STATUS_MAP.values()), key="ret_status")
+            with fc2:
+                _ret_type_filter = st.selectbox("유형", ["전체", "반품", "취소"], key="ret_type")
+            with fc3:
+                _ret_fault_filter = st.selectbox("귀책", ["전체", "고객", "셀러", "쿠팡"], key="ret_fault")
 
-            if _unchecked.empty:
-                st.info("입고 확인 대기 건 없음")
+            df = _all.copy()
+            if _ret_status_filter != "전체":
+                df = df[df["상태"] == _ret_status_filter]
+            if _ret_type_filter != "전체":
+                df = df[df["유형"] == _ret_type_filter]
+            if _ret_fault_filter != "전체":
+                df = df[df["귀책"] == _ret_fault_filter]
+
+            if df.empty:
+                st.info("해당 조건의 반품/취소 건이 없습니다.")
             else:
-                _uc_cols = ["계정", "접수번호", "주문번호", "상품명", "사유분류", "수량", "귀책", "선환불", "회수종류", "접수일"]
-                _uc_show = _unchecked[[c for c in _uc_cols if c in _unchecked.columns]].reset_index(drop=True)
-                _uc_evt = st.dataframe(
-                    _uc_show, use_container_width=True, hide_index=True,
-                    selection_mode="single-row", on_select="rerun", key="ret_uc_table",
-                )
-                _uc_sel = _uc_evt.selection.rows if _uc_evt and _uc_evt.selection else []
-                if _uc_sel:
-                    _uc_row = _unchecked.iloc[_uc_sel[0]]
-                    st.info(f"**[접수 {_uc_row['접수번호']}]** {_uc_row['상품명'][:80]} — {_uc_row['계정']}")
-                    if st.button("입고 확인", type="primary", key="btn_confirm"):
-                        _acct, _client = _client_for(_uc_row["계정"])
-                        if _client:
-                            try:
-                                _client.confirm_return_receipt(int(_uc_row["접수번호"]))
-                                st.success(f"입고 확인 완료: {_uc_row['접수번호']}")
-                                _clear_return_cache()
-                            except CoupangWingError as e:
-                                st.error(f"API 오류: {e}")
-                        else:
-                            st.error("WING API 클라이언트 생성 불가")
+                _display_cols = [
+                    "계정", "접수번호", "주문번호", "유형", "상태", "접수일",
+                    "상품명", "사유분류", "수량", "배송비", "귀책", "요청자",
+                    "출고중지상태", "회수종류", "선환불", "회수송장",
+                ]
+                _show = df[[c for c in _display_cols if c in df.columns]].copy()
+                _show["배송비"] = _show["배송비"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
 
-            st.divider()
-
-            # ── 반품 승인 대기 ──
-            st.subheader("반품 승인 대기")
-            st.caption("입고확인(VENDOR_WAREHOUSE_CONFIRM) → 반품 승인(환불). 빠른환불 대상은 자동 처리됩니다.")
-            _confirmed = _all[_all["_receipt_status"] == "VENDOR_WAREHOUSE_CONFIRM"]
-
-            if _confirmed.empty:
-                st.info("승인 대기 건 없음")
-            else:
-                _cf_cols = ["계정", "접수번호", "주문번호", "상품명", "사유분류", "수량", "귀책", "선환불", "접수일"]
-                _cf_show = _confirmed[[c for c in _cf_cols if c in _confirmed.columns]].reset_index(drop=True)
-                _cf_evt = st.dataframe(
-                    _cf_show, use_container_width=True, hide_index=True,
-                    selection_mode="single-row", on_select="rerun", key="ret_cf_table",
-                )
-                _cf_sel = _cf_evt.selection.rows if _cf_evt and _cf_evt.selection else []
-                if _cf_sel:
-                    _cf_row = _confirmed.iloc[_cf_sel[0]]
-                    st.info(f"**[접수 {_cf_row['접수번호']}]** {_cf_row['상품명'][:80]} — {_cf_row['계정']}")
-                    if st.button("반품 승인", type="primary", key="btn_approve"):
-                        _acct, _client = _client_for(_cf_row["계정"])
-                        if _client:
-                            try:
-                                _cancel_count = int(_cf_row["수량"]) if pd.notna(_cf_row["수량"]) and int(_cf_row["수량"]) > 0 else 1
-                                _client.approve_return_request(int(_cf_row["접수번호"]), cancel_count=_cancel_count)
-                                st.success(f"반품 승인 완료: {_cf_row['접수번호']}")
-                                _clear_return_cache()
-                            except CoupangWingError as e:
-                                st.error(f"API 오류: {e}")
-                        else:
-                            st.error("WING API 클라이언트 생성 불가")
-
-            st.divider()
-
-            # ── 출고중지 요청 ──
-            st.subheader("출고중지 요청")
-            st.caption("상품준비중 단계에서 고객이 반품 접수 → 출고 전 중지 처리 필요")
-            _stop = _all[_all["_receipt_status"] == "RELEASE_STOP_UNCHECKED"]
-            if _stop.empty:
-                st.info("출고중지 요청 건 없음")
-            else:
-                st.dataframe(
-                    _stop[["계정", "접수번호", "주문번호", "상품명", "사유분류", "수량", "출고중지상태", "접수일"]].reset_index(drop=True),
-                    use_container_width=True, hide_index=True,
+                _evt2 = st.dataframe(
+                    _show.reset_index(drop=True), use_container_width=True, hide_index=True, height=500,
+                    selection_mode="single-row", on_select="rerun", key="ret_list_table",
                 )
 
-    # ── 탭3: 회수 송장 등록 ──
-    with tab3:
-        st.subheader("회수 송장 등록")
-        st.caption("굿스플로(반품자동연동) 미사용 시, 반품접수 상태에서 직접 회수 송장을 등록합니다.")
+                _sel2 = _evt2.selection.rows if _evt2 and _evt2.selection else []
+                if _sel2:
+                    _detail_row = df.iloc[_sel2[0]]
+                    _sel_detail = _detail_row["접수번호"]
 
-        _targets = _all[_all["_receipt_status"] == "RETURNS_UNCHECKED"] if not _all.empty else pd.DataFrame()
+                    with st.expander(f"상세 — 접수번호 {_sel_detail}", expanded=True):
+                        dc1, dc2, dc3 = st.columns(3)
+                        dc1.write(f"**주문번호:** {_detail_row['주문번호']}")
+                        dc1.write(f"**유형:** {_detail_row['유형']}")
+                        dc1.write(f"**상태:** {_detail_row['상태']}")
+                        dc2.write(f"**요청자:** {_detail_row['요청자']}")
+                        dc2.write(f"**귀책:** {_detail_row['귀책']}")
+                        dc2.write(f"**선환불:** {_detail_row['선환불']}")
+                        dc3.write(f"**출고중지상태:** {_detail_row.get('출고중지상태', '-')}")
+                        dc3.write(f"**회수종류:** {_detail_row.get('회수종류', '-')}")
+                        dc3.write(f"**배송비:** {_detail_row['배송비']}")
 
-        if _targets.empty:
-            st.info("회수 송장 등록 가능한 반품 없음")
-        else:
-            _inv_cols = ["계정", "접수번호", "주문번호", "상품명", "사유분류", "수량", "요청자", "회수종류", "접수일"]
-            _inv_show = _targets[[c for c in _inv_cols if c in _targets.columns]].reset_index(drop=True)
-            _inv_evt = st.dataframe(
-                _inv_show, use_container_width=True, hide_index=True,
-                selection_mode="single-row", on_select="rerun", key="ret_inv_table",
-            )
-            _inv_sel = _inv_evt.selection.rows if _inv_evt and _inv_evt.selection else []
+                        st.write(f"**사유:** {_detail_row.get('사유분류', '')} > {_detail_row.get('사유상세', '')} | {_detail_row.get('사유코드', '')}")
+                        if _detail_row.get("비고"):
+                            st.write(f"**비고:** {_detail_row['비고']}")
 
-            if _inv_sel:
-                _inv_row = _targets.iloc[_inv_sel[0]]
-                st.info(f"**[접수 {_inv_row['접수번호']}]** {_inv_row['상품명'][:80]} — {_inv_row['계정']}")
-                st.markdown("---")
+                        items = _detail_row.get("_return_items", [])
+                        if items:
+                            st.write("**반품 아이템:**")
+                            item_rows = []
+                            for ri in items:
+                                item_rows.append({
+                                    "상품명": ri.get("sellerProductName", ""),
+                                    "옵션명": ri.get("vendorItemName", ""),
+                                    "옵션ID": ri.get("vendorItemId", ""),
+                                    "주문수량": ri.get("purchaseCount", 0),
+                                    "취소수량": ri.get("cancelCount", 0),
+                                    "출고상태": _RELEASE_STATUS_MAP.get(ri.get("releaseStatus", ""), ri.get("releaseStatus", "")),
+                                })
+                            st.dataframe(pd.DataFrame(item_rows), use_container_width=True, hide_index=True)
 
-                ic1, ic2 = st.columns(2)
-                with ic1:
-                    _sel_company = st.selectbox(
-                        "택배사", list(_DELIVERY_COMPANIES.keys()),
-                        format_func=lambda x: f"{_DELIVERY_COMPANIES[x]} ({x})",
-                        key="sel_inv_company",
-                    )
-                with ic2:
-                    _inv_num = st.text_input("운송장번호", key="inv_number")
-                    _reg_num = st.text_input("택배사 회수번호 (선택)", key="reg_number")
+                        if _detail_row.get("회수송장"):
+                            st.write(f"**회수송장:** {_detail_row['회수송장']}")
 
-                if st.button("회수 송장 등록", type="primary", key="btn_create_invoice"):
-                    if not _inv_num.strip():
-                        st.error("운송장번호를 입력하세요.")
-                    else:
-                        _acct, _client3 = _client_for(_inv_row["계정"])
-                        if _client3:
-                            try:
-                                _client3.create_return_invoice(
-                                    receipt_id=int(_inv_row["접수번호"]),
-                                    delivery_company_code=_sel_company,
-                                    invoice_number=_inv_num.strip(),
-                                    delivery_type="RETURN",
-                                    reg_number=_reg_num.strip(),
-                                )
-                                st.success(f"회수 송장 등록 완료: {_DELIVERY_COMPANIES.get(_sel_company, _sel_company)} {_inv_num}")
-                                _clear_return_cache()
-                            except CoupangWingError as e:
-                                st.error(f"API 오류: {e}")
-                        else:
-                            st.error("WING API 클라이언트 생성 불가")
-            else:
-                st.caption("테이블에서 행을 선택하세요.")
+                st.download_button(
+                    "CSV 다운로드",
+                    _show.to_csv(index=False, encoding="utf-8-sig"),
+                    file_name=f"returns_{date.today().isoformat()}.csv",
+                    mime="text/csv",
+                    key="ret_csv_dl",
+                )
 
     # ── 탭4: 교환 ──
     with tab4:
