@@ -2,8 +2,8 @@
 주문/배송 통합 페이지
 ====================
 탭1: 결제완료 (ACCEPT) → 발주확인
-탭2: 상품준비중 (INSTRUCT) → 배송리스트/한진/송장등록
-탭3: 배송지시 (DEPARTURE) → 발주서/극동 다운로드
+탭2: 상품준비중 (INSTRUCT) → 발주서/극동/배송리스트/한진/송장등록
+탭3: 배송지시 (DEPARTURE) → 조회 전용
 """
 import io
 import logging
@@ -345,20 +345,26 @@ def render(selected_account, accounts_df, account_names):
 
             st.divider()
 
-            # 2-2. 배송리스트 다운로드
+            # 2-1. 발주서
+            _render_purchase_order(_t2_filtered, accounts_df, key_prefix="t2")
+
+            # 2-2. 극동 엑셀
+            _render_geukdong_excel(_t2_filtered, accounts_df, key_prefix="t2")
+
+            # 2-3. 배송리스트 다운로드
             _render_delivery_list(_t2_filtered)
 
-            # 2-5. 한진 N-Focus 송장 발급
+            # 2-4. 한진 N-Focus 송장 발급
             _render_hanjin_nfocus()
 
-            # 2-6. 쿠팡 송장 등록
+            # 2-5. 쿠팡 송장 등록
             _render_invoice_upload(_t2_filtered, accounts_df)
 
     # ══════════════════════════════════════
-    # 탭3: 배송지시 (DEPARTURE) → 발주서/극동 다운로드
+    # 탭3: 배송지시 (DEPARTURE) — 조회 전용
     # ══════════════════════════════════════
     with _tab3:
-        st.caption("배송지시(출고완료) 주문 조회 · 발주서/극동 엑셀 다운로드")
+        st.caption("배송지시(출고완료) 주문 조회")
 
         _t3_accts = st.multiselect("계정", account_names, default=account_names, key="t3_acct")
 
@@ -389,14 +395,6 @@ def render(selected_account, accounts_df, account_names):
             gb3.configure_column("상품/옵션/수량", width=350)
             gb3.configure_column("배송지", width=250)
             AgGrid(_t3_grid, gridOptions=gb3.build(), height=500, theme="streamlit", key="t3_grid")
-
-            st.divider()
-
-            # 발주서 (배송지시 기준)
-            _render_purchase_order(_t3_data, accounts_df, key_prefix="t3")
-
-            # 극동 엑셀 (배송지시 기준)
-            _render_geukdong_excel(_t3_data, accounts_df, key_prefix="t3")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
