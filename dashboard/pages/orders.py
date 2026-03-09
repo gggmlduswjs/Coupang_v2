@@ -873,6 +873,23 @@ def _render_delivery_list(instruct_all):
         # 세션에 저장 (송장 매칭용)
         st.session_state["_delivery_list_df"] = _dl_df.copy()
 
+        # ── 중복 다운로드 방지 ──
+        _current_boxes = set(_dl_df["묶음배송번호"].astype(str))
+        _prev_boxes = st.session_state.get("_dl_downloaded_boxes", set())
+        _overlap = _current_boxes & _prev_boxes
+        if _overlap:
+            st.error(
+                f"⚠️ 이미 배송리스트를 다운받은 주문 {len(_overlap)}건이 포함되어 있습니다.\n\n"
+                "같은 주문을 한진에 2번 입력하면 **송장이 중복 발급**됩니다!"
+            )
+            _force_dl = st.checkbox(
+                "중복 확인했음 — 그래도 다운로드",
+                key="t2_force_dl",
+                value=False,
+            )
+            if not _force_dl:
+                st.stop()
+
         # 책별 픽킹 요약
         _pick_summary = (
             _dl_df.groupby("등록상품명")
@@ -922,7 +939,7 @@ def _render_delivery_list(instruct_all):
 
         _dl_buf.seek(0)
 
-        st.download_button(
+        if st.download_button(
             f"📦 배송리스트 다운로드 ({len(_dl_orders)}건, 책별 정렬)",
             _dl_buf.getvalue(),
             file_name=f"DeliveryList({date.today().isoformat()})_통합.xlsx",
@@ -930,7 +947,10 @@ def _render_delivery_list(instruct_all):
             key="t2_dl_delivery_list",
             type="primary",
             use_container_width=True,
-        )
+        ):
+            # 다운로드 클릭 시 box ID 기록 (중복 방지용)
+            _prev = st.session_state.get("_dl_downloaded_boxes", set())
+            st.session_state["_dl_downloaded_boxes"] = _prev | _current_boxes
         st.caption("Sheet1: 한진택배 업로드용 (책 순 정렬) | Sheet2: 픽킹리스트")
 
 
@@ -1140,8 +1160,9 @@ def _render_invoice_upload(instruct_all, accounts_df):
             if _total_success > 0:
                 st.success(f"송장 등록 완료: 총 {_total_success}건 성공" + (f", {_total_fail}건 실패" if _total_fail else ""))
                 clear_order_caches()
-                # 세션 배송리스트 클리어 (등록 완료된 건과 불일치 방지)
+                # 세션 배송리스트 & 다운로드 기록 클리어
                 st.session_state.pop("_delivery_list_df", None)
+                st.session_state.pop("_dl_downloaded_boxes", None)
                 st.rerun()
             elif _total_fail > 0:
                 st.error(f"전체 실패: {_total_fail}건")
