@@ -991,12 +991,18 @@ def _render_invoice_upload(instruct_all, accounts_df):
             st.info("한진 출력자료등록 형식 감지 → 순번 기반 자동 매칭 모드")
             _matched_df = _match_by_sequence(_inv_df, _delivery_df, accounts_df)
 
-        elif _has_hanjin_name_cols and _delivery_df is not None:
+        elif _has_hanjin_name_cols:
             # 수취인 이름 매칭 (원본List 형식 — 순번 없음)
-            st.info("한진 원본List 형식 감지 → 수취인 이름 기반 매칭 모드")
-            _matched_df = _match_by_name(_inv_df, _delivery_df, _recv_col_name, accounts_df)
+            # 세션 배송리스트 우선, 없으면 INSTRUCT 주문에서 직접 매칭
+            _name_source = _delivery_df if _delivery_df is not None else None
+            if _name_source is not None:
+                st.info("한진 원본List 형식 감지 → 수취인 이름 기반 매칭 (배송리스트)")
+                _matched_df = _match_by_name(_inv_df, _name_source, _recv_col_name, accounts_df)
+            else:
+                st.info("한진 원본List 형식 감지 → 수취인 이름 기반 매칭 (INSTRUCT 주문)")
+                _matched_df = _match_by_name_from_orders(_inv_df, instruct_all, _recv_col_name)
 
-        elif (_has_hanjin_seq_cols or _has_hanjin_name_cols) and _delivery_df is None:
+        elif _has_hanjin_seq_cols and _delivery_df is None:
             st.warning("배송리스트가 세션에 없습니다. 먼저 '배송리스트 다운로드'를 실행하세요.")
             return
 
@@ -1251,6 +1257,65 @@ def _match_by_name(hanjin_df, delivery_df, recv_col, accounts_df):
         st.warning(f"매칭 실패: {_match_fail}건")
 
     st.info(f"수취인 이름 매칭 성공: {_match_ok}건")
+    return pd.DataFrame(_results) if _results else None
+
+
+def _match_by_name_from_orders(hanjin_df, instruct_all, recv_col):
+    """한진 원본List → INSTRUCT 주문 데이터에서 직접 수취인 이름으로 매칭 (세션 배송리스트 불필요)"""
+    _hj = hanjin_df.copy()
+    _hj = _hj[_hj["운송장번호"].notna() & (_hj["운송장번호"] != "")].copy()
+    if _hj.empty:
+        st.warning("운송장번호가 입력된 행이 없습니다.")
+        return None
+
+    if instruct_all.empty:
+        st.warning("상품준비중 주문이 없습니다.")
+        return None
+
+    # 한진 원본List: 묶음배송 중복 제거 (같은 운송장번호 = 같은 수취인)
+    _hj_unique = _hj.drop_duplicates(subset=["운송장번호"], keep="first").copy()
+
+    _orders = instruct_all.copy()
+    _results = []
+    _match_ok = 0
+    _match_fail = 0
+    _used_box_ids = set()
+
+    for _, _hr in _hj_unique.iterrows():
+        _invoice = str(_hr["운송장번호"]).strip()
+        _hj_name = str(_hr[recv_col]).strip()
+
+        if not _hj_name or _hj_name == "nan":
+            _match_fail += 1
+            continue
+
+        # INSTRUCT 주문에서 수취인 매칭 (아직 사용되지 않은 묶음배송번호만)
+        _avail = _orders[~_orders["묶음배송번호"].isin(_used_box_ids)]
+        _candidates = _avail[_avail["수취인"].astype(str).str.strip() == _hj_name]
+
+        if _candidates.empty:
+            st.warning(f"'{_hj_name}' 매칭 실패 (상품준비중 주문에 없음)")
+            _match_fail += 1
+            continue
+
+        # 첫 번째 매칭된 묶음배송번호 사용
+        _first = _candidates.iloc[0]
+        _box_id = _first["묶음배송번호"]
+        _used_box_ids.add(_box_id)
+
+        _results.append({
+            "묶음배송번호": _box_id,
+            "주문번호": _first["주문번호"],
+            "운송장번호": _invoice,
+            "_account_id": _first["_account_id"],
+            "_vendor_item_id": _first["_vendor_item_id"],
+        })
+        _match_ok += 1
+
+    if _match_fail > 0:
+        st.warning(f"매칭 실패: {_match_fail}건")
+
+    st.info(f"수취인 이름 매칭 성공: {_match_ok}건 (INSTRUCT 주문 직접 매칭)")
     return pd.DataFrame(_results) if _results else None
 
 
