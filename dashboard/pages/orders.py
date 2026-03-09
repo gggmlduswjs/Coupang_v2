@@ -1054,6 +1054,12 @@ def _render_invoice_upload(instruct_all, accounts_df):
                 st.info("출고중지 건을 제외하면 등록할 송장이 없습니다.")
             return
 
+        # 묶음배송번호 기준 중복 제거 (한진 원본List는 아이템별 행 → 같은 묶음배송번호 중복)
+        _before_dedup = len(_safe_df)
+        _safe_df = _safe_df.drop_duplicates(subset=["묶음배송번호"], keep="first").copy()
+        if _before_dedup != len(_safe_df):
+            st.caption(f"묶음배송 중복 제거: {_before_dedup}행 → {len(_safe_df)}건")
+
         if not _stop_orders.empty:
             st.info(f"출고중지 제외 후 송장 등록 대상: {len(_safe_df)}건")
 
