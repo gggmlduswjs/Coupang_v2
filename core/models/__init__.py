@@ -13,6 +13,7 @@ from core.models.revenue import RevenueHistory, SettlementHistory
 from core.models.ad import AdSpend, AdPerformance
 from core.models.order import Order
 from core.models.return_request import ReturnRequest
+from core.models.delivery_log import DeliveryListLog
 from core.models.keyword import Keyword, Snapshot, SearchResult
 from core.models.exposure import ExposureLog
 from core.models.catalog import CatalogMatch
@@ -25,7 +26,7 @@ __all__ = [
     "BundleSKU", "BundleItem", "Listing", "DeletedListing",
     "MasterCatalog", "SyncLog", "ProductChange",
     "AnalysisResult", "RevenueHistory", "SettlementHistory",
-    "AdSpend", "AdPerformance", "Order", "ReturnRequest",
+    "AdSpend", "AdPerformance", "Order", "ReturnRequest", "DeliveryListLog",
     "Keyword", "Snapshot", "SearchResult",
     "ExposureLog", "CatalogMatch",
     "InventoryProduct",  # deprecated

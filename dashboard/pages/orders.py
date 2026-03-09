@@ -36,6 +36,8 @@ from dashboard.services.order_service import (
     load_hanjin_creds as _load_hanjin_creds,
     save_hanjin_creds as _save_hanjin_creds,
 )
+from core.database import SessionLocal
+from core.models.delivery_log import DeliveryListLog
 
 logger = logging.getLogger(__name__)
 
@@ -873,10 +875,19 @@ def _render_delivery_list(instruct_all):
         # 세션에 저장 (송장 매칭용)
         st.session_state["_delivery_list_df"] = _dl_df.copy()
 
-        # ── 중복 다운로드 방지 ──
-        _current_boxes = set(_dl_df["묶음배송번호"].astype(str))
-        _prev_boxes = st.session_state.get("_dl_downloaded_boxes", set())
-        _overlap = _current_boxes & _prev_boxes
+        # ── 중복 다운로드 방지 (DB 기반) ──
+        _current_boxes = set(int(b) for b in _dl_df["묶음배송번호"])
+        try:
+            _db = SessionLocal()
+            _existing = _db.query(DeliveryListLog.shipment_box_id).filter(
+                DeliveryListLog.shipment_box_id.in_(list(_current_boxes))
+            ).all()
+            _db.close()
+            _overlap_boxes = {r[0] for r in _existing}
+            _overlap = _current_boxes & _overlap_boxes
+        except Exception as e:
+            logger.warning(f"배송리스트 중복 체크 실패: {e}")
+            _overlap = set()
         if _overlap:
             st.error(
                 f"⚠️ 이미 배송리스트를 다운받은 주문 {len(_overlap)}건이 포함되어 있습니다.\n\n"
@@ -948,9 +959,18 @@ def _render_delivery_list(instruct_all):
             type="primary",
             use_container_width=True,
         ):
-            # 다운로드 클릭 시 box ID 기록 (중복 방지용)
-            _prev = st.session_state.get("_dl_downloaded_boxes", set())
-            st.session_state["_dl_downloaded_boxes"] = _prev | _current_boxes
+            # 다운로드 클릭 시 DB에 기록 (중복 방지용)
+            try:
+                _db = SessionLocal()
+                for _, _r in _dl_df.iterrows():
+                    _db.add(DeliveryListLog(
+                        shipment_box_id=int(_r["묶음배송번호"]),
+                        account_id=int(_r["_account_id"]),
+                    ))
+                _db.commit()
+                _db.close()
+            except Exception as e:
+                logger.warning(f"배송리스트 다운로드 기록 실패: {e}")
         st.caption("Sheet1: 한진택배 업로드용 (책 순 정렬) | Sheet2: 픽킹리스트")
 
 
@@ -1160,9 +1180,8 @@ def _render_invoice_upload(instruct_all, accounts_df):
             if _total_success > 0:
                 st.success(f"송장 등록 완료: 총 {_total_success}건 성공" + (f", {_total_fail}건 실패" if _total_fail else ""))
                 clear_order_caches()
-                # 세션 배송리스트 & 다운로드 기록 클리어
+                # 세션 배송리스트 클리어
                 st.session_state.pop("_delivery_list_df", None)
-                st.session_state.pop("_dl_downloaded_boxes", None)
                 st.rerun()
             elif _total_fail > 0:
                 st.error(f"전체 실패: {_total_fail}건")
