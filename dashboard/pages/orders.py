@@ -1121,6 +1121,8 @@ def _render_invoice_upload(instruct_all, accounts_df):
             if _total_success > 0:
                 st.success(f"송장 등록 완료: 총 {_total_success}건 성공" + (f", {_total_fail}건 실패" if _total_fail else ""))
                 clear_order_caches()
+                # 세션 배송리스트 클리어 (등록 완료된 건과 불일치 방지)
+                st.session_state.pop("_delivery_list_df", None)
                 st.rerun()
             elif _total_fail > 0:
                 st.error(f"전체 실패: {_total_fail}건")
