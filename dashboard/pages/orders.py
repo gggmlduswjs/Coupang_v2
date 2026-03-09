@@ -1022,6 +1022,25 @@ def _render_invoice_upload(instruct_all, accounts_df):
 
         st.success(f"매칭 완료: {len(_matched_df)}건")
 
+        # ── 중복 등록 방지: 현재 INSTRUCT 주문과 대조 ──
+        if not instruct_all.empty:
+            _current_boxes = set(instruct_all["묶음배송번호"].astype(str))
+            _matched_df["_box_str"] = _matched_df["묶음배송번호"].astype(str)
+            _already_done = _matched_df[~_matched_df["_box_str"].isin(_current_boxes)]
+            _matched_df = _matched_df[_matched_df["_box_str"].isin(_current_boxes)].copy()
+            _matched_df = _matched_df.drop(columns=["_box_str"])
+            if not _already_done.empty:
+                st.warning(f"⚠️ 이미 처리된 주문 {len(_already_done)}건 제외 (INSTRUCT 아님 → 중복 등록 방지)")
+                with st.expander(f"제외된 주문 상세 ({len(_already_done)}건)"):
+                    st.dataframe(_already_done[["묶음배송번호", "주문번호", "운송장번호"]].drop_duplicates(), hide_index=True)
+        else:
+            st.warning("현재 INSTRUCT 주문이 없습니다. 등록할 대상이 없습니다.")
+            return
+
+        if _matched_df.empty:
+            st.info("모든 주문이 이미 처리되었습니다. 등록할 송장이 없습니다.")
+            return
+
         # ── 출고중지요청 체크 (쿠팡 공식 워크플로우 필수 단계) ──
         _stop_orders, _safe_df = _check_stop_shipment_requests(_matched_df, accounts_df)
 
