@@ -1226,15 +1226,12 @@ def _match_by_name(hanjin_df, delivery_df, recv_col, accounts_df):
             _match_fail += 1
             continue
 
-        # 배송리스트에서 매칭 (구매자 우선, 수취인 fallback)
+        # 배송리스트에서 매칭 (수취인 우선, 구매자 fallback)
         _avail = _dl[~_dl.index.isin(_used_dl_indices)]
-        _candidates = pd.DataFrame()
+        _candidates = _avail[_avail["수취인이름"].astype(str).str.strip() == _hj_name]
 
-        if "구매자" in _dl.columns:
+        if _candidates.empty and "구매자" in _dl.columns:
             _candidates = _avail[_avail["구매자"].astype(str).str.strip() == _hj_name]
-
-        if _candidates.empty:
-            _candidates = _avail[_avail["수취인이름"].astype(str).str.strip() == _hj_name]
 
         if _candidates.empty:
             st.warning(f"'{_hj_name}' 매칭 실패 (배송리스트에 없음)")
