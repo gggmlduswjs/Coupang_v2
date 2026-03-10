@@ -844,6 +844,10 @@ def _render_delivery_list(instruct_all):
                     f"⚠️ 이미 배송리스트를 다운받은 주문 {len(_overlap)}건이 포함되어 있습니다.\n\n"
                     "같은 주문을 한진에 2번 입력하면 **송장이 중복 발급**됩니다!"
                 )
+                _overlap_detail = _dl_df[_dl_df["묶음배송번호"].isin(_overlap)][
+                    ["번호", "묶음배송번호", "주문번호", "수취인이름", "등록상품명"]
+                ].copy()
+                st.dataframe(_overlap_detail, hide_index=True, use_container_width=True)
                 _force_dl = st.checkbox(
                     "중복 확인했음 — 그래도 다운로드",
                     key="t2_force_dl",
