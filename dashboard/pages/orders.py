@@ -826,35 +826,33 @@ def _render_delivery_list(instruct_all):
             # 세션에 저장 (송장 매칭용)
             st.session_state["_delivery_list_df"] = _dl_df.copy()
 
-            # ── 중복 다운로드 방지 (DB 기반) ──
-            _current_boxes = set(int(b) for b in _dl_df["묶음배송번호"])
+            # ── 이전 다운로드 이력 확인 (정보 표시, 차단 안 함) ──
+            _current_boxes = list(int(b) for b in _dl_df["묶음배송번호"])
             try:
                 _db = SessionLocal()
-                _existing = _db.query(DeliveryListLog.shipment_box_id).filter(
-                    DeliveryListLog.shipment_box_id.in_(list(_current_boxes))
+                _prev_logs = _db.query(
+                    DeliveryListLog.shipment_box_id,
+                    DeliveryListLog.downloaded_at,
+                ).filter(
+                    DeliveryListLog.shipment_box_id.in_(_current_boxes)
                 ).all()
                 _db.close()
-                _overlap_boxes = {r[0] for r in _existing}
-                _overlap = _current_boxes & _overlap_boxes
+                _prev_map = {r[0]: r[1] for r in _prev_logs}  # box_id → downloaded_at
             except Exception as e:
-                logger.warning(f"배송리스트 중복 체크 실패: {e}")
-                _overlap = set()
-            if _overlap:
-                st.error(
-                    f"⚠️ 이미 배송리스트를 다운받은 주문 {len(_overlap)}건이 포함되어 있습니다.\n\n"
-                    "같은 주문을 한진에 2번 입력하면 **송장이 중복 발급**됩니다!"
-                )
-                _overlap_detail = _dl_df[_dl_df["묶음배송번호"].isin(_overlap)][
+                logger.warning(f"배송리스트 이력 체크 실패: {e}")
+                _prev_map = {}
+            if _prev_map:
+                _overlap_detail = _dl_df[_dl_df["묶음배송번호"].isin(_prev_map.keys())][
                     ["번호", "묶음배송번호", "주문번호", "수취인이름", "등록상품명"]
                 ].copy()
-                st.dataframe(_overlap_detail, hide_index=True, use_container_width=True)
-                _force_dl = st.checkbox(
-                    "중복 확인했음 — 그래도 다운로드",
-                    key="t2_force_dl",
-                    value=False,
+                _overlap_detail["이전 다운로드"] = _overlap_detail["묶음배송번호"].map(
+                    lambda x: _prev_map.get(int(x))
+                ).apply(lambda dt: (dt + timedelta(hours=9)).strftime("%m/%d %H:%M") if dt else "")
+                st.warning(
+                    f"이전에 다운로드한 적 있는 주문 {len(_prev_map)}건 — "
+                    "한진에 이미 올렸다면 중복 송장에 주의하세요."
                 )
-                if not _force_dl:
-                    return
+                st.dataframe(_overlap_detail, hide_index=True, use_container_width=True)
         except Exception as e:
             st.error(f"배송리스트 생성 오류: {e}")
             logger.exception("배송리스트 생성 오류")
