@@ -918,6 +918,30 @@ def _render_invoice_upload(instruct_all, accounts_df):
         if _inv_df is None:
             return
 
+        # ── 디버그: 업로드된 파일 정보 ──
+        with st.expander("🔍 디버그: 파일/매칭 정보", expanded=False):
+            st.write(f"**업로드 파일 컬럼**: {list(_inv_df.columns)}")
+            st.write(f"**업로드 파일 행 수**: {len(_inv_df)}")
+            _delivery_df_debug = st.session_state.get("_delivery_list_df")
+            if _delivery_df_debug is not None:
+                st.write(f"**배송리스트 컬럼**: {list(_delivery_df_debug.columns)}")
+                st.write(f"**배송리스트 행 수**: {len(_delivery_df_debug)}")
+                if "수취인이름" in _delivery_df_debug.columns:
+                    _dl_names = _delivery_df_debug["수취인이름"].astype(str).str.strip().unique()[:10]
+                    st.write(f"**배송리스트 수취인 샘플**: {list(_dl_names)}")
+            else:
+                st.warning("배송리스트가 세션에 없음")
+            # 한진 파일 수취인 샘플
+            for _rc in ["받으시는 분", "받으시는분", "수취인", "수취인이름"]:
+                if _rc in _inv_df.columns:
+                    _hj_names = _inv_df[_rc].astype(str).str.strip().unique()[:10]
+                    st.write(f"**한진 '{_rc}' 샘플**: {list(_hj_names)}")
+                    break
+            st.write(f"**INSTRUCT 주문 수**: {len(instruct_all)}")
+            if not instruct_all.empty and "수취인" in instruct_all.columns:
+                _inst_names = instruct_all["수취인"].astype(str).str.strip().unique()[:10]
+                st.write(f"**INSTRUCT 수취인 샘플**: {list(_inst_names)}")
+
         # ── 매칭 로직 ──
         _delivery_df = st.session_state.get("_delivery_list_df")
 
@@ -946,20 +970,32 @@ def _render_invoice_upload(instruct_all, accounts_df):
 
         elif _has_hanjin_name_cols:
             # 원본List 형식 — 순번 없음
-            # 우선순위: BOX 메모 → 행 순서 → 이름
+            _hj_valid = _inv_df[_inv_df["운송장번호"].notna() & (_inv_df["운송장번호"] != "")]
+            _hj_count = len(_hj_valid)
+
             if _delivery_df is not None:
+                st.caption(f"한진 운송장 {_hj_count}건 / 배송리스트 {len(_delivery_df)}건")
+
                 # 1차: BOX:{묶음배송번호} 메모 매칭 (가장 정확)
                 _matched_df = _match_by_memo_box_id(_inv_df, _delivery_df)
 
-                # 2차: 행 순서 매칭
+                # 2차: 행 순서 매칭 (행 수 일치 시)
+                if _matched_df is None and _hj_count == len(_delivery_df):
+                    st.info("행 순서 기반 매칭 (배송리스트와 행 수 일치)")
+                    _matched_df = _match_by_row_order(_inv_df, _delivery_df, _recv_col_name, accounts_df)
+
+                # 3차: 이름 매칭 (배송리스트)
                 if _matched_df is None:
-                    _hj_valid = _inv_df[_inv_df["운송장번호"].notna() & (_inv_df["운송장번호"] != "")]
-                    if len(_hj_valid) == len(_delivery_df):
-                        st.info("행 순서 기반 매칭 (배송리스트와 행 수 일치)")
-                        _matched_df = _match_by_row_order(_inv_df, _delivery_df, _recv_col_name, accounts_df)
-                    else:
-                        st.info("수취인/구매자 이름 기반 매칭 (배송리스트)")
-                        _matched_df = _match_by_name(_inv_df, _delivery_df, _recv_col_name, accounts_df)
+                    st.info("수취인/구매자 이름 기반 매칭 (배송리스트)")
+                    _matched_df = _match_by_name(_inv_df, _delivery_df, _recv_col_name, accounts_df)
+
+                # 4차: 배송리스트 매칭 실패율이 높으면 INSTRUCT 주문에서 직접 매칭
+                _matched_count = len(_matched_df) if _matched_df is not None else 0
+                if _matched_count < _hj_count * 0.5:
+                    st.warning(f"배송리스트 매칭 {_matched_count}/{_hj_count}건 — INSTRUCT 주문에서 직접 재매칭 시도")
+                    _matched_df2 = _match_by_name_from_orders(_inv_df, instruct_all, _recv_col_name)
+                    if _matched_df2 is not None and len(_matched_df2) > _matched_count:
+                        _matched_df = _matched_df2
             else:
                 st.info("수취인/구매자 이름 기반 매칭 (INSTRUCT 주문)")
                 _matched_df = _match_by_name_from_orders(_inv_df, instruct_all, _recv_col_name)
