@@ -9,7 +9,7 @@ class DeliveryListLog(Base):
 
     __tablename__ = "delivery_list_logs"
     __table_args__ = (
-        Index("ix_dllog_shipment", "shipment_box_id"),
+        Index("ix_dllog_shipment", "shipment_box_id", unique=True),
         Index("ix_dllog_receiver", "receiver_name"),
     )
 
