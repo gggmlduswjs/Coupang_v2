@@ -872,19 +872,144 @@ def _render_delivery_list(instruct_all):
             type="primary",
             use_container_width=True,
         ):
-            # 다운로드 클릭 시 DB에 기록 (중복 방지용)
+            # 다운로드 클릭 시 DB에 기록 (중복 방지 + 송장 매칭용)
             try:
                 _db = SessionLocal()
-                for _, _r in _dl_df.iterrows():
+                for _seq, (_, _r) in enumerate(_dl_df.iterrows(), 1):
                     _db.add(DeliveryListLog(
                         shipment_box_id=int(_r["묶음배송번호"]),
                         account_id=int(_r["_account_id"]),
+                        order_id=int(_r.get("주문번호", 0) or 0),
+                        vendor_item_id=int(_r.get("_vendor_item_id", 0) or 0),
+                        receiver_name=str(_r.get("수취인이름", "")).strip(),
+                        buyer_name=str(_r.get("구매자", "")).strip(),
+                        seq_no=_seq,
                     ))
                 _db.commit()
                 _db.close()
             except Exception as e:
                 logger.warning(f"배송리스트 다운로드 기록 실패: {e}")
         st.caption("Sheet1: 한진택배 업로드용 (책 순 정렬) | Sheet2: 픽킹리스트")
+
+
+def _load_delivery_list_from_db():
+    """DB에서 최근 배송리스트 로드 (다른 컴퓨터/세션에서도 매칭 가능)"""
+    try:
+        _db = SessionLocal()
+        from sqlalchemy import desc
+        logs = _db.query(DeliveryListLog).filter(
+            DeliveryListLog.receiver_name.isnot(None),
+            DeliveryListLog.receiver_name != "",
+        ).order_by(desc(DeliveryListLog.downloaded_at)).limit(500).all()
+        _db.close()
+
+        if not logs:
+            return None
+
+        rows = []
+        for log in logs:
+            rows.append({
+                "번호": log.seq_no or 0,
+                "묶음배송번호": log.shipment_box_id,
+                "주문번호": log.order_id or 0,
+                "수취인이름": log.receiver_name or "",
+                "구매자": log.buyer_name or "",
+                "_account_id": log.account_id,
+                "_vendor_item_id": log.vendor_item_id or 0,
+            })
+        return pd.DataFrame(rows)
+    except Exception as e:
+        logger.warning(f"DB 배송리스트 로드 실패: {e}")
+        return None
+
+
+def _match_by_name_from_db(hanjin_df, recv_col):
+    """DB orders 테이블에서 수취인 이름으로 직접 매칭 (세션/INSTRUCT 독립)"""
+    _hj = hanjin_df.copy()
+    _hj = _hj[_hj["운송장번호"].notna() & (_hj["운송장번호"] != "")].copy()
+    if _hj.empty:
+        return None
+
+    # 한진 수취인 이름 목록
+    _names = set()
+    for _, _hr in _hj.iterrows():
+        _n = str(_hr[recv_col]).strip()
+        if _n and _n != "nan":
+            _names.add(_n)
+
+    if not _names:
+        return None
+
+    # DB에서 최근 주문 조회 (INSTRUCT + DEPARTURE 포함)
+    try:
+        from sqlalchemy import text as sa_text
+        _name_list = list(_names)
+        _sql = """
+            SELECT shipment_box_id, order_id, receiver_name, orderer_name,
+                   account_id, vendor_item_id
+            FROM orders
+            WHERE (receiver_name = ANY(:names) OR orderer_name = ANY(:names))
+              AND ordered_at >= NOW() - INTERVAL '14 days'
+            ORDER BY ordered_at DESC
+        """
+        from dashboard.utils import engine
+        with engine.connect() as conn:
+            _result = conn.execute(sa_text(_sql), {"names": _name_list})
+            _db_rows = _result.fetchall()
+    except Exception as e:
+        logger.warning(f"DB 주문 조회 실패: {e}")
+        return None
+
+    if not _db_rows:
+        st.warning("DB에서도 매칭되는 주문을 찾을 수 없습니다.")
+        return None
+
+    # DB 결과를 DataFrame으로
+    _db_df = pd.DataFrame(_db_rows, columns=[
+        "묶음배송번호", "주문번호", "수취인", "주문자", "_account_id", "_vendor_item_id"
+    ])
+
+    # 매칭
+    _hj_unique = _hj.drop_duplicates(subset=["운송장번호"], keep="first")
+    _results = []
+    _used_box_ids = set()
+    _match_ok = 0
+    _match_fail = 0
+
+    for _, _hr in _hj_unique.iterrows():
+        _invoice = str(_hr["운송장번호"]).strip()
+        _hj_name = str(_hr[recv_col]).strip()
+        if not _hj_name or _hj_name == "nan":
+            _match_fail += 1
+            continue
+
+        _avail = _db_df[~_db_df["묶음배송번호"].isin(_used_box_ids)]
+        _candidates = _avail[_avail["수취인"].astype(str).str.strip() == _hj_name]
+        if _candidates.empty:
+            _candidates = _avail[_avail["주문자"].astype(str).str.strip() == _hj_name]
+        if _candidates.empty:
+            _match_fail += 1
+            continue
+
+        _first = _candidates.iloc[0]
+        _box_id = _first["묶음배송번호"]
+        _used_box_ids.add(_box_id)
+
+        _results.append({
+            "묶음배송번호": _box_id,
+            "주문번호": _first["주문번호"],
+            "운송장번호": _invoice,
+            "_account_id": _first["_account_id"],
+            "_vendor_item_id": _first["_vendor_item_id"],
+        })
+        _match_ok += 1
+
+    if _match_fail > 0:
+        st.warning(f"DB 매칭 실패: {_match_fail}건")
+    if _match_ok > 0:
+        st.info(f"DB 주문 매칭 성공: {_match_ok}건")
+
+    return pd.DataFrame(_results) if _results else None
 
 
 def _render_hanjin_nfocus():
@@ -945,6 +1070,12 @@ def _render_invoice_upload(instruct_all, accounts_df):
         # ── 매칭 로직 ──
         _delivery_df = st.session_state.get("_delivery_list_df")
 
+        # DB에서 최근 배송리스트 로드 (세션 없어도 동작)
+        _db_delivery_df = _load_delivery_list_from_db()
+        if _db_delivery_df is not None and (_delivery_df is None or len(_db_delivery_df) > len(_delivery_df)):
+            st.caption(f"DB 배송리스트 로드: {len(_db_delivery_df)}건")
+            _delivery_df = _db_delivery_df
+
         # 한진 출력자료등록 엑셀 컬럼 확인
         _has_direct_cols = all(c in _inv_df.columns for c in ["묶음배송번호", "주문번호", "운송장번호"])
         _has_hanjin_seq_cols = "순번" in _inv_df.columns and "운송장번호" in _inv_df.columns
@@ -959,50 +1090,53 @@ def _render_invoice_upload(instruct_all, accounts_df):
         _matched_df = None
 
         if _has_direct_cols:
-            # 직접 매칭 (묶음배송번호/주문번호 있는 경우)
             st.info("묶음배송번호/주문번호 컬럼 감지 → 직접 매칭 모드")
             _matched_df = _match_direct(_inv_df, instruct_all, accounts_df)
 
         elif _has_hanjin_seq_cols and _delivery_df is not None:
-            # 순번 매칭 (한진 출력자료등록 결과)
             st.info("한진 출력자료등록 형식 감지 → 순번 기반 자동 매칭 모드")
             _matched_df = _match_by_sequence(_inv_df, _delivery_df, accounts_df)
 
+        elif _has_hanjin_seq_cols and _delivery_df is None:
+            # 순번은 있지만 배송리스트 없음 → DB에서 로드 시도
+            st.warning("배송리스트가 없습니다. DB 기록도 없으면 먼저 '배송리스트 다운로드'를 실행하세요.")
+            return
+
         elif _has_hanjin_name_cols:
-            # 원본List 형식 — 순번 없음
             _hj_valid = _inv_df[_inv_df["운송장번호"].notna() & (_inv_df["운송장번호"] != "")]
             _hj_count = len(_hj_valid)
 
             if _delivery_df is not None:
                 st.caption(f"한진 운송장 {_hj_count}건 / 배송리스트 {len(_delivery_df)}건")
 
-                # 1차: BOX:{묶음배송번호} 메모 매칭 (가장 정확)
+                # 1차: BOX 메모 매칭
                 _matched_df = _match_by_memo_box_id(_inv_df, _delivery_df)
 
-                # 2차: 행 순서 매칭 (행 수 일치 시)
+                # 2차: 행 순서 매칭
                 if _matched_df is None and _hj_count == len(_delivery_df):
-                    st.info("행 순서 기반 매칭 (배송리스트와 행 수 일치)")
+                    st.info("행 순서 기반 매칭 (행 수 일치)")
                     _matched_df = _match_by_row_order(_inv_df, _delivery_df, _recv_col_name, accounts_df)
 
                 # 3차: 이름 매칭 (배송리스트)
                 if _matched_df is None:
-                    st.info("수취인/구매자 이름 기반 매칭 (배송리스트)")
+                    st.info("수취인 이름 기반 매칭 (배송리스트)")
                     _matched_df = _match_by_name(_inv_df, _delivery_df, _recv_col_name, accounts_df)
 
-                # 4차: 배송리스트 매칭 실패율이 높으면 INSTRUCT 주문에서 직접 매칭
-                _matched_count = len(_matched_df) if _matched_df is not None else 0
-                if _matched_count < _hj_count * 0.5:
-                    st.warning(f"배송리스트 매칭 {_matched_count}/{_hj_count}건 — INSTRUCT 주문에서 직접 재매칭 시도")
-                    _matched_df2 = _match_by_name_from_orders(_inv_df, instruct_all, _recv_col_name)
-                    if _matched_df2 is not None and len(_matched_df2) > _matched_count:
-                        _matched_df = _matched_df2
-            else:
-                st.info("수취인/구매자 이름 기반 매칭 (INSTRUCT 주문)")
-                _matched_df = _match_by_name_from_orders(_inv_df, instruct_all, _recv_col_name)
-
-        elif _has_hanjin_seq_cols and _delivery_df is None:
-            st.warning("배송리스트가 세션에 없습니다. 먼저 '배송리스트 다운로드'를 실행하세요.")
-            return
+            # 배송리스트 매칭 부족 시 → DB/INSTRUCT 주문 fallback
+            _matched_count = len(_matched_df) if _matched_df is not None else 0
+            if _matched_count < _hj_count * 0.5:
+                if _matched_count > 0:
+                    st.warning(f"배송리스트 매칭 {_matched_count}/{_hj_count}건 — DB 주문에서 재매칭 시도")
+                else:
+                    st.info("DB 주문에서 수취인 이름 매칭")
+                _matched_df2 = _match_by_name_from_db(_inv_df, _recv_col_name)
+                if _matched_df2 is not None and len(_matched_df2) > _matched_count:
+                    _matched_df = _matched_df2
+                else:
+                    # INSTRUCT API fallback
+                    _matched_df3 = _match_by_name_from_orders(_inv_df, instruct_all, _recv_col_name)
+                    if _matched_df3 is not None and len(_matched_df3) > _matched_count:
+                        _matched_df = _matched_df3
 
         else:
             st.error("엑셀 형식을 인식할 수 없습니다. '묶음배송번호/주문번호/운송장번호' 또는 '순번/운송장번호' 컬럼이 필요합니다.")
