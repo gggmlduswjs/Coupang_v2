@@ -215,6 +215,36 @@ def _match_by_name(hanjin_df: pd.DataFrame, recv_col: str) -> Optional[pd.DataFr
     return pd.DataFrame(results) if results else None
 
 
+def _enrich_from_db(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """묶음배송번호/주문번호는 있지만 _account_id/_vendor_item_id가 없을 때 DB에서 보충."""
+    try:
+        box_ids = [int(x) for x in df["묶음배송번호"].unique()]
+        sql = """
+            SELECT shipment_box_id, order_id, account_id, vendor_item_id
+            FROM orders
+            WHERE shipment_box_id = ANY(:box_ids)
+              AND ordered_at >= NOW() - INTERVAL '14 days'
+        """
+        with engine.connect() as conn:
+            result = conn.execute(sa_text(sql), {"box_ids": box_ids})
+            db_rows = result.fetchall()
+        if not db_rows:
+            return None
+        db_df = pd.DataFrame(db_rows, columns=["묶음배송번호", "주문번호", "_account_id", "_vendor_item_id"])
+        db_df = db_df.drop_duplicates(subset=["묶음배송번호", "주문번호"])
+        # str 변환 후 merge
+        df["묶음배송번호"] = df["묶음배송번호"].astype(str)
+        df["주문번호"] = df["주문번호"].astype(str)
+        db_df["묶음배송번호"] = db_df["묶음배송번호"].astype(str)
+        db_df["주문번호"] = db_df["주문번호"].astype(str)
+        merged = df.merge(db_df, on=["묶음배송번호", "주문번호"], how="left")
+        matched = merged[merged["_account_id"].notna()].copy()
+        return matched if not matched.empty else None
+    except Exception as e:
+        logger.warning(f"DB enrichment 실패: {e}")
+        return None
+
+
 def match_invoices(hanjin_df: pd.DataFrame, batch_df: Optional[pd.DataFrame]) -> tuple[Optional[pd.DataFrame], str]:
     """한진 엑셀 ↔ 배치/DB 자동 매칭.
 
@@ -226,7 +256,11 @@ def match_invoices(hanjin_df: pd.DataFrame, batch_df: Optional[pd.DataFrame]) ->
     if all(c in hanjin_df.columns for c in ["묶음배송번호", "주문번호", "운송장번호"]):
         filled = hanjin_df[hanjin_df["운송장번호"].notna() & (hanjin_df["운송장번호"] != "")].copy()
         if not filled.empty:
-            return filled[["묶음배송번호", "주문번호", "운송장번호", "_account_id", "_vendor_item_id"]].copy(), "직접매칭"
+            # _account_id/_vendor_item_id 없으면 DB에서 조회
+            if "_account_id" not in filled.columns:
+                filled = _enrich_from_db(filled)
+            if filled is not None and not filled.empty:
+                return filled[["묶음배송번호", "주문번호", "운송장번호", "_account_id", "_vendor_item_id"]].copy(), "직접매칭"
 
     # 전략1: 순번 매칭
     if batch_df is not None and "순번" in hanjin_df.columns:
