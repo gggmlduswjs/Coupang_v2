@@ -31,10 +31,13 @@ from dashboard.services.order_data import (
     clear_order_caches,
     fmt_krw_short,
     STATUS_MAP,
+    build_delivery_rows,
+    build_delivery_excel_bytes,
 )
 from dashboard.services.order_service import (
     load_hanjin_creds as _load_hanjin_creds,
     save_hanjin_creds as _save_hanjin_creds,
+    update_orders_status_after_invoice as _update_orders_status,
 )
 from core.database import SessionLocal
 from core.models.delivery_log import DeliveryListLog
@@ -267,11 +270,11 @@ def render(selected_account, accounts_df, account_names):
                         _ack_box_ids = _sel_data["묶음배송번호"].unique().tolist()
                         _ack_orders = _refreshed_instruct[_refreshed_instruct["묶음배송번호"].isin(_ack_box_ids)]
                         if not _ack_orders.empty:
-                            _ack_xl_bytes = _build_delivery_excel(_ack_orders)
+                            _ack_xl_bytes, _ = build_delivery_excel_bytes(_ack_orders, sort_and_color=False)
                         else:
-                            _ack_xl_bytes = _build_delivery_excel(_sel_data)
+                            _ack_xl_bytes, _ = build_delivery_excel_bytes(_sel_data, sort_and_color=False)
                     else:
-                        _ack_xl_bytes = _build_delivery_excel(_sel_data)
+                        _ack_xl_bytes, _ = build_delivery_excel_bytes(_sel_data, sort_and_color=False)
                     st.session_state["_ack_delivery_excel"] = {
                         "data": _ack_xl_bytes,
                         "count": len(_sel_data),
@@ -811,66 +814,8 @@ def _render_delivery_list(instruct_all):
         _acct_counts = _dl_orders.groupby("계정").size().reset_index(name="건수")
         st.dataframe(_acct_counts, hide_index=True)
 
-        # 쿠팡 DeliveryList 형식 (40컬럼)
-        _dl_rows = []
-        for _idx, (_i, _row) in enumerate(_dl_orders.iterrows(), 1):
-            _dl_rows.append({
-                "번호": _idx,
-                "묶음배송번호": int(_row["묶음배송번호"]),
-                "주문번호": int(_row["주문번호"]),
-                "택배사": "한진택배",
-                "운송장번호": "",
-                "분리배송 Y/N": "분리배송가능" if _row.get("분리배송가능") else "분리배송불가",
-                "분리배송 출고예정일": "",
-                "주문시 출고예정일": _row.get("주문시출고예정일", ""),
-                "출고일(발송일)": "",
-                "주문일": _row.get("주문일시", _row.get("주문일", "")),
-                "등록상품명": str(_row.get("상품명") or ""),
-                "등록옵션명": _row.get("등록옵션명") or _row.get("옵션명", ""),
-                "노출상품명(옵션명)": f"{_row.get('상품명', '')}, {_row.get('옵션명', '')}",
-                "노출상품ID": str(_row.get("_seller_product_id", "")),
-                "옵션ID": str(_row.get("_vendor_item_id", "")),
-                "최초등록등록상품명/옵션명": _row.get("최초등록상품옵션명", ""),
-                "업체상품코드": _row.get("업체상품코드", ""),
-                "바코드": "",
-                "결제액": int(_row.get("결제금액", 0)),
-                "배송비구분": _row.get("배송비구분", ""),
-                "배송비": _row.get("배송비", 0),
-                "도서산간 추가배송비": int(_row.get("도서산간추가배송비", 0)),
-                "구매수(수량)": int(_row.get("수량", 0)),
-                "옵션판매가(판매단가)": int(_row.get("판매단가", 0) or _row.get("결제금액", 0)),
-                "구매자": _row.get("구매자", ""),
-                "구매자전화번호": _row.get("구매자전화번호", ""),
-                "수취인이름": _row.get("수취인", ""),
-                "수취인전화번호": _row.get("수취인전화번호", ""),
-                "우편번호": _row.get("우편번호", ""),
-                "수취인 주소": _row.get("수취인주소", ""),
-                "배송메세지": _row.get("배송메세지", ""),
-                "상품별 추가메시지": "",
-                "주문자 추가메시지": "",
-                "배송완료일": "",
-                "구매확정일자": "",
-                "개인통관번호(PCCC)": _row.get("개인통관번호", ""),
-                "통관용수취인전화번호": _row.get("통관용전화번호", ""),
-                "기타": "",
-                "결제위치": _row.get("결제위치", ""),
-                "배송유형": "판매자 배송",
-                "_account_id": int(_row.get("_account_id", 0)),
-                "_vendor_item_id": int(_row.get("_vendor_item_id", 0)),
-            })
-
-        _dl_df = pd.DataFrame(_dl_rows)
-        _dl_df["등록상품명"] = _dl_df["등록상품명"].fillna("").astype(str)
-
-        # 묶음배송(한 사람이 여러 책) 구분: 단건 먼저, 묶음은 뒤로
-        # 묶음배송도 첫 번째 책 이름 기준으로 같은 책끼리 모음
-        _box_counts = _dl_df.groupby("묶음배송번호")["묶음배송번호"].transform("count")
-        _dl_df["_is_bundle"] = (_box_counts > 1).astype(int)
-        _dl_df["_bundle_first_book"] = _dl_df.groupby("묶음배송번호")["등록상품명"].transform("first")
-        _dl_df["_is_single_qty"] = (_dl_df["구매수(수량)"] <= 1).astype(int)  # 0=2권이상(앞), 1=1권(뒤)
-        _dl_df = _dl_df.sort_values(["_is_bundle", "_bundle_first_book", "등록상품명", "_is_single_qty", "묶음배송번호"]).reset_index(drop=True)
-        _dl_df = _dl_df.drop(columns=["_is_bundle", "_bundle_first_book", "_is_single_qty"])
-        _dl_df["번호"] = range(1, len(_dl_df) + 1)
+        # 공유 함수로 엑셀 생성
+        _xl_bytes, _dl_df = build_delivery_excel_bytes(_dl_orders, sort_and_color=True)
 
         # 세션에 저장 (송장 매칭용)
         st.session_state["_delivery_list_df"] = _dl_df.copy()
@@ -899,7 +844,7 @@ def _render_delivery_list(instruct_all):
                 value=False,
             )
             if not _force_dl:
-                st.stop()
+                return
 
         # 책별 픽킹 요약
         _pick_summary = (
@@ -913,46 +858,9 @@ def _render_delivery_list(instruct_all):
             st.dataframe(_pick_summary, hide_index=True, use_container_width=True,
                          column_config={"도서명": st.column_config.TextColumn(width="large")})
 
-        # 엑셀 생성 (내부 컬럼 제외)
-        _excel_cols = [c for c in _dl_df.columns if not c.startswith("_")]
-        _dl_excel = _dl_df[_excel_cols].copy()
-
-        _dl_buf = io.BytesIO()
-        with pd.ExcelWriter(_dl_buf, engine="openpyxl") as writer:
-            _dl_excel.to_excel(writer, sheet_name="Delivery", index=False)
-            ws = writer.sheets["Delivery"]
-            from openpyxl.utils import get_column_letter
-            from openpyxl.styles import PatternFill
-            # 텍스트 포맷 (지수 표기 방지)
-            for col_name in ["묶음배송번호", "주문번호", "노출상품ID", "옵션ID"]:
-                if col_name in _dl_excel.columns:
-                    col_idx = _dl_excel.columns.get_loc(col_name)
-                    col_letter = get_column_letter(col_idx + 1)
-                    for row_idx in range(2, len(_dl_excel) + 2):
-                        cell = ws[f"{col_letter}{row_idx}"]
-                        cell.value = str(int(cell.value)) if cell.value is not None else ""
-                        cell.number_format = "@"
-            # 같은 책 첫 행에 색상 표시
-            _prev_book = None
-            _fill = PatternFill(start_color="D9E8FB", end_color="D9E8FB", fill_type="solid")
-            for row_idx, book in enumerate(_dl_excel["등록상품명"], start=2):
-                if book != _prev_book:
-                    for c in range(1, len(_dl_excel.columns) + 1):
-                        ws.cell(row=row_idx, column=c).fill = _fill
-                    _prev_book = book
-
-            # 픽킹리스트 시트
-            _pick_summary.to_excel(writer, sheet_name="픽킹리스트", index=False)
-            ws2 = writer.sheets["픽킹리스트"]
-            ws2.column_dimensions["A"].width = 60
-            ws2.column_dimensions["B"].width = 12
-            ws2.column_dimensions["C"].width = 12
-
-        _dl_buf.seek(0)
-
         if st.download_button(
             f"📦 배송리스트 다운로드 ({len(_dl_orders)}건, 책별 정렬)",
-            _dl_buf.getvalue(),
+            _xl_bytes,
             file_name=f"DeliveryList({date.today().isoformat()})_통합.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="t2_dl_delivery_list",
@@ -1032,14 +940,23 @@ def _render_invoice_upload(instruct_all, accounts_df):
             _matched_df = _match_by_sequence(_inv_df, _delivery_df, accounts_df)
 
         elif _has_hanjin_name_cols:
-            # 수취인 이름 매칭 (원본List 형식 — 순번 없음)
-            # 세션 배송리스트 우선, 없으면 INSTRUCT 주문에서 직접 매칭
-            _name_source = _delivery_df if _delivery_df is not None else None
-            if _name_source is not None:
-                st.info("한진 원본List 형식 감지 → 수취인 이름 기반 매칭 (배송리스트)")
-                _matched_df = _match_by_name(_inv_df, _name_source, _recv_col_name, accounts_df)
+            # 원본List 형식 — 순번 없음
+            # 우선순위: BOX 메모 → 행 순서 → 이름
+            if _delivery_df is not None:
+                # 1차: BOX:{묶음배송번호} 메모 매칭 (가장 정확)
+                _matched_df = _match_by_memo_box_id(_inv_df, _delivery_df)
+
+                # 2차: 행 순서 매칭
+                if _matched_df is None:
+                    _hj_valid = _inv_df[_inv_df["운송장번호"].notna() & (_inv_df["운송장번호"] != "")]
+                    if len(_hj_valid) == len(_delivery_df):
+                        st.info("행 순서 기반 매칭 (배송리스트와 행 수 일치)")
+                        _matched_df = _match_by_row_order(_inv_df, _delivery_df, _recv_col_name, accounts_df)
+                    else:
+                        st.info("수취인/구매자 이름 기반 매칭 (배송리스트)")
+                        _matched_df = _match_by_name(_inv_df, _delivery_df, _recv_col_name, accounts_df)
             else:
-                st.info("한진 원본List 형식 감지 → 수취인 이름 기반 매칭 (INSTRUCT 주문)")
+                st.info("수취인/구매자 이름 기반 매칭 (INSTRUCT 주문)")
                 _matched_df = _match_by_name_from_orders(_inv_df, instruct_all, _recv_col_name)
 
         elif _has_hanjin_seq_cols and _delivery_df is None:
@@ -1131,6 +1048,7 @@ def _render_invoice_upload(instruct_all, accounts_df):
         if st.button(f"전체 송장 등록 ({len(_safe_df)}건)", key="t2_btn_bulk_invoice", type="primary"):
             _total_success = 0
             _total_fail = 0
+            _success_items = []  # DB 상태 업데이트용
 
             for _aid, _grp in _safe_df.groupby("_account_id"):
                 _aid = int(_aid)
@@ -1165,11 +1083,17 @@ def _render_invoice_upload(instruct_all, accounts_df):
                         for _ri in _result["data"].get("responseList", []):
                             if _ri.get("succeed"):
                                 _s_cnt += 1
+                                _success_items.append({
+                                    "shipmentBoxId": _ri.get("shipmentBoxId"),
+                                    "invoiceNumber": str(_ri.get("invoiceNumber", "")),
+                                    "deliveryCompanyCode": "HANJIN",
+                                })
                             else:
                                 _f_cnt += 1
                                 st.error(f"  [{_acct_row['account_name']}] {_ri.get('shipmentBoxId')}: {_ri.get('resultMessage', '')}")
                     else:
                         _s_cnt = len(_inv_data)
+                        _success_items.extend(_inv_data)
                     _total_success += _s_cnt
                     _total_fail += _f_cnt
                     st.info(f"[{_acct_row['account_name']}] 성공 {_s_cnt}건" + (f", 실패 {_f_cnt}건" if _f_cnt else ""))
@@ -1177,14 +1101,22 @@ def _render_invoice_upload(instruct_all, accounts_df):
                     _total_fail += len(_inv_data)
                     st.error(f"[{_acct_row['account_name']}] API 오류: {e}")
 
+            # 성공 건 DB 상태 → DEPARTURE 업데이트
+            if _success_items:
+                _update_orders_status(_success_items)
+
             if _total_success > 0:
                 st.success(f"송장 등록 완료: 총 {_total_success}건 성공" + (f", {_total_fail}건 실패" if _total_fail else ""))
                 clear_order_caches()
-                # 세션 배송리스트 클리어
-                st.session_state.pop("_delivery_list_df", None)
+                if _total_fail == 0:
+                    # 전체 성공 시에만 배송리스트 클리어
+                    st.session_state.pop("_delivery_list_df", None)
+                else:
+                    # 부분 실패: 배송리스트 보존 (재시도 가능)
+                    st.warning("일부 실패 건이 있어 배송리스트를 보존합니다. 새로고침 후 재시도하세요.")
                 st.rerun()
             elif _total_fail > 0:
-                st.error(f"전체 실패: {_total_fail}건")
+                st.error(f"전체 실패: {_total_fail}건 — 배송리스트를 보존합니다. 원인 확인 후 재시도하세요.")
 
 
 def _check_stop_shipment_requests(matched_df, accounts_df):
@@ -1263,8 +1195,136 @@ def _check_stop_shipment_requests(matched_df, accounts_df):
     return _stop_df, _safe_df
 
 
+def _match_by_memo_box_id(hanjin_df, delivery_df):
+    """한진 원본List의 메모/출고번호 등에서 BOX:{묶음배송번호}를 추출하여 직접 매칭.
+
+    배송리스트 '기타' 컬럼에 BOX:{묶음배송번호}를 심어뒀으므로,
+    한진 N-Focus가 이를 메모/출고번호 등에 매핑했으면 추출 가능.
+    """
+    import re
+
+    _hj = hanjin_df.copy()
+    _hj = _hj[_hj["운송장번호"].notna() & (_hj["운송장번호"] != "")].copy()
+    if _hj.empty:
+        return None
+
+    # BOX: 패턴을 가진 컬럼 탐색 (메모1~4, 출고번호, 특기사항, 기타 등 전체)
+    _box_col = None
+    for col in _hj.columns:
+        sample = _hj[col].astype(str).str.contains(r"BOX:\d+", na=False)
+        if sample.any():
+            _box_col = col
+            break
+
+    if _box_col is None:
+        return None
+
+    st.info(f"한진 원본List '{_box_col}' 컬럼에서 묶음배송번호 감지 → 직접 매칭")
+
+    # BOX:{id} 추출
+    _hj["_box_id"] = _hj[_box_col].astype(str).str.extract(r"BOX:(\d+)")[0]
+    _hj_valid = _hj[_hj["_box_id"].notna()].copy()
+
+    if _hj_valid.empty:
+        return None
+
+    _dl = delivery_df.copy()
+    _dl["묶음배송번호"] = _dl["묶음배송번호"].astype(str)
+
+    _results = []
+    _match_ok = 0
+    _used_dl_indices = set()
+
+    for _, _hr in _hj_valid.iterrows():
+        _invoice = str(_hr["운송장번호"]).strip()
+        _box_id = _hr["_box_id"]
+
+        _candidates = _dl[
+            (_dl["묶음배송번호"] == _box_id) & (~_dl.index.isin(_used_dl_indices))
+        ]
+        if _candidates.empty:
+            continue
+
+        _dl_row = _candidates.iloc[0]
+        _used_dl_indices.add(_dl_row.name)
+
+        _results.append({
+            "묶음배송번호": int(_box_id),
+            "주문번호": _dl_row["주문번호"],
+            "운송장번호": _invoice,
+            "_account_id": _dl_row["_account_id"],
+            "_vendor_item_id": _dl_row["_vendor_item_id"],
+        })
+        _match_ok += 1
+
+    if not _results:
+        return None
+
+    st.info(f"묶음배송번호 직접 매칭 성공: {_match_ok}건")
+    return pd.DataFrame(_results)
+
+
+def _match_by_row_order(hanjin_df, delivery_df, recv_col, accounts_df):
+    """한진 원본List 엑셀 → 행 순서(index) 기반으로 배송리스트와 매칭.
+
+    배송리스트와 한진 원본List는 같은 데이터에서 생성되므로 행 순서가 동일.
+    묶음배송(같은 운송장번호 여러 행)도 순서대로 매칭됨.
+    """
+    _hj = hanjin_df.copy()
+    _hj = _hj[_hj["운송장번호"].notna() & (_hj["운송장번호"] != "")].copy()
+    if _hj.empty:
+        st.warning("운송장번호가 입력된 행이 없습니다.")
+        return None
+
+    _dl = delivery_df.copy()
+
+    if len(_hj) != len(_dl):
+        st.warning(f"행 수 불일치 (한진: {len(_hj)}, 배송리스트: {len(_dl)}) → 행 순서 매칭 불가")
+        return None
+
+    _results = []
+    _match_ok = 0
+    _match_fail = 0
+    _name_mismatch = 0
+
+    for i in range(len(_hj)):
+        _hr = _hj.iloc[i]
+        _dr = _dl.iloc[i]
+        _invoice = str(_hr["운송장번호"]).strip()
+
+        # 이름 검증 (경고만, 실패 처리 안 함)
+        if recv_col and recv_col in _hr.index:
+            _hj_name = str(_hr[recv_col]).strip()
+            _dl_recv = str(_dr["수취인이름"]).strip()
+            _dl_buyer = str(_dr.get("구매자", "")).strip()
+            if _hj_name and _hj_name != "nan":
+                if _hj_name != _dl_recv and _hj_name != _dl_buyer:
+                    # 부분 일치 체크 (한진 30자 제한으로 잘릴 수 있음)
+                    if not (_dl_recv.startswith(_hj_name) or _hj_name.startswith(_dl_recv)):
+                        _name_mismatch += 1
+
+        _results.append({
+            "묶음배송번호": _dr["묶음배송번호"],
+            "주문번호": _dr["주문번호"],
+            "운송장번호": _invoice,
+            "_account_id": _dr["_account_id"],
+            "_vendor_item_id": _dr["_vendor_item_id"],
+        })
+        _match_ok += 1
+
+    if _name_mismatch > 0:
+        st.warning(f"행 순서 매칭 중 이름 불일치 {_name_mismatch}건 (구매자≠수취인 또는 이름 절삭 — 정상 케이스일 수 있음)")
+
+    st.info(f"행 순서 매칭 성공: {_match_ok}건")
+    return pd.DataFrame(_results) if _results else None
+
+
 def _match_by_name(hanjin_df, delivery_df, recv_col, accounts_df):
-    """한진 원본List 엑셀 → 수취인 이름 + 운송장번호로 배송리스트와 매칭"""
+    """한진 원본List 엑셀 → 수취인 이름 + 운송장번호로 배송리스트와 매칭.
+
+    동명이인 처리: 같은 이름이 여러 건이면 수량/결제금액 컬럼으로 추가 필터.
+    한진 "받으시는 분" = 수취인 또는 구매자이므로 양쪽 모두 검색.
+    """
     _hj = hanjin_df.copy()
 
     # 운송장번호 있는 행만
@@ -1272,6 +1332,18 @@ def _match_by_name(hanjin_df, delivery_df, recv_col, accounts_df):
     if _hj.empty:
         st.warning("운송장번호가 입력된 행이 없습니다.")
         return None
+
+    # 한진 엑셀의 수량/금액 컬럼 탐색 (동명이인 구분용)
+    _hj_qty_col = None
+    for c in ["수량", "구매수(수량)", "구매수"]:
+        if c in _hj.columns:
+            _hj_qty_col = c
+            break
+    _hj_amt_col = None
+    for c in ["결제액", "결제금액", "금액"]:
+        if c in _hj.columns:
+            _hj_amt_col = c
+            break
 
     _dl = delivery_df.copy()
     _results = []
@@ -1287,17 +1359,47 @@ def _match_by_name(hanjin_df, delivery_df, recv_col, accounts_df):
             _match_fail += 1
             continue
 
-        # 배송리스트에서 매칭 (수취인 우선, 구매자 fallback)
+        # 배송리스트에서 매칭 (수취인이름 + 구매자 동시 검색)
         _avail = _dl[~_dl.index.isin(_used_dl_indices)]
-        _candidates = _avail[_avail["수취인이름"].astype(str).str.strip() == _hj_name]
+        _recv_match = _avail[_avail["수취인이름"].astype(str).str.strip() == _hj_name]
+        _buyer_match = pd.DataFrame()
+        if "구매자" in _dl.columns:
+            _buyer_match = _avail[_avail["구매자"].astype(str).str.strip() == _hj_name]
+            # 구매자 매칭에서 수취인이름 매칭과 겹치는 행 제외 (중복 방지)
+            _buyer_only = _buyer_match[~_buyer_match.index.isin(_recv_match.index)]
+        else:
+            _buyer_only = pd.DataFrame()
 
-        if _candidates.empty and "구매자" in _dl.columns:
-            _candidates = _avail[_avail["구매자"].astype(str).str.strip() == _hj_name]
+        # 수취인 매칭 우선, 구매자 매칭 보조 (합치지 않고 우선순위)
+        if not _recv_match.empty:
+            _candidates = _recv_match
+        elif not _buyer_only.empty:
+            _candidates = _buyer_only
+        else:
+            # 부분 일치 시도 (한진 30자 제한으로 잘릴 수 있음)
+            _partial = _avail[_avail["수취인이름"].astype(str).str.strip().str.startswith(_hj_name) |
+                              _avail["수취인이름"].astype(str).str.strip().apply(lambda n: _hj_name.startswith(n) if len(n) > 1 else False)]
+            if not _partial.empty:
+                _candidates = _partial
+            else:
+                st.warning(f"'{_hj_name}' 매칭 실패 (배송리스트에 없음)")
+                _match_fail += 1
+                continue
 
-        if _candidates.empty:
-            st.warning(f"'{_hj_name}' 매칭 실패 (배송리스트에 없음)")
-            _match_fail += 1
-            continue
+        # 동명이인 추가 필터: 수량 → 금액 순으로 좁히기
+        if len(_candidates) > 1:
+            _narrowed = _candidates
+            if _hj_qty_col and pd.notna(_hr.get(_hj_qty_col)):
+                _hj_qty = int(_hr[_hj_qty_col])
+                _qty_match = _narrowed[_narrowed["구매수(수량)"].astype(int) == _hj_qty]
+                if not _qty_match.empty:
+                    _narrowed = _qty_match
+            if len(_narrowed) > 1 and _hj_amt_col and pd.notna(_hr.get(_hj_amt_col)):
+                _hj_amt = int(_hr[_hj_amt_col])
+                _amt_match = _narrowed[_narrowed["결제액"].astype(int) == _hj_amt]
+                if not _amt_match.empty:
+                    _narrowed = _amt_match
+            _candidates = _narrowed
 
         _dl_row = _candidates.iloc[0]
         _used_dl_indices.add(_dl_row.name)
@@ -1347,14 +1449,22 @@ def _match_by_name_from_orders(hanjin_df, instruct_all, recv_col):
             _match_fail += 1
             continue
 
-        # INSTRUCT 주문에서 수취인 매칭 (아직 사용되지 않은 묶음배송번호만)
+        # INSTRUCT 주문에서 수취인 + 주문자 동시 매칭 (아직 사용되지 않은 묶음배송번호만)
         _avail = _orders[~_orders["묶음배송번호"].isin(_used_box_ids)]
         _candidates = _avail[_avail["수취인"].astype(str).str.strip() == _hj_name]
 
+        if _candidates.empty and "주문자" in _avail.columns:
+            _candidates = _avail[_avail["주문자"].astype(str).str.strip() == _hj_name]
+
         if _candidates.empty:
-            st.warning(f"'{_hj_name}' 매칭 실패 (상품준비중 주문에 없음)")
-            _match_fail += 1
-            continue
+            # 부분 일치 (한진 30자 절삭)
+            _partial = _avail[_avail["수취인"].astype(str).str.strip().str.startswith(_hj_name)]
+            if not _partial.empty:
+                _candidates = _partial
+            else:
+                st.warning(f"'{_hj_name}' 매칭 실패 (상품준비중 주문에 없음)")
+                _match_fail += 1
+                continue
 
         # 첫 번째 매칭된 묶음배송번호 사용
         _first = _candidates.iloc[0]
@@ -1491,67 +1601,5 @@ def _match_direct(inv_df, instruct_all, accounts_df):
     return _matched if not _matched.empty else None
 
 
-def _build_delivery_excel(orders_df):
-    """쿠팡 표준 40컬럼 DeliveryList 엑셀 생성 (발주확인 시 다운로드용)"""
-    _rows = []
-    for _idx, (_i, _row) in enumerate(orders_df.iterrows(), 1):
-        _rows.append({
-            "번호": _idx,
-            "묶음배송번호": int(_row["묶음배송번호"]),
-            "주문번호": int(_row["주문번호"]),
-            "택배사": "한진택배",
-            "운송장번호": "",
-            "분리배송 Y/N": "분리배송가능" if _row.get("분리배송가능") else "분리배송불가",
-            "분리배송 출고예정일": "",
-            "주문시 출고예정일": _row.get("주문시출고예정일", ""),
-            "출고일(발송일)": "",
-            "주문일": _row.get("주문일시", _row.get("주문일", "")),
-            "등록상품명": str(_row.get("상품명") or ""),
-            "등록옵션명": _row.get("등록옵션명") or _row.get("옵션명", ""),
-            "노출상품명(옵션명)": f"{_row.get('상품명', '')}, {_row.get('옵션명', '')}",
-            "노출상품ID": str(_row.get("_seller_product_id", "")),
-            "옵션ID": str(_row.get("_vendor_item_id", "")),
-            "최초등록등록상품명/옵션명": _row.get("최초등록상품옵션명", ""),
-            "업체상품코드": _row.get("업체상품코드", ""),
-            "바코드": "",
-            "결제액": int(_row.get("결제금액", 0)),
-            "배송비구분": _row.get("배송비구분", ""),
-            "배송비": _row.get("배송비", 0),
-            "도서산간 추가배송비": int(_row.get("도서산간추가배송비", 0)),
-            "구매수(수량)": int(_row.get("수량", 0)),
-            "옵션판매가(판매단가)": int(_row.get("판매단가", 0) or _row.get("결제금액", 0)),
-            "구매자": _row.get("구매자", ""),
-            "구매자전화번호": _row.get("구매자전화번호", ""),
-            "수취인이름": _row.get("수취인", ""),
-            "수취인전화번호": _row.get("수취인전화번호", ""),
-            "우편번호": _row.get("우편번호", ""),
-            "수취인 주소": _row.get("수취인주소", ""),
-            "배송메세지": _row.get("배송메세지", ""),
-            "상품별 추가메시지": "",
-            "주문자 추가메시지": "",
-            "배송완료일": "",
-            "구매확정일자": "",
-            "개인통관번호(PCCC)": _row.get("개인통관번호", ""),
-            "통관용수취인전화번호": _row.get("통관용전화번호", ""),
-            "기타": "",
-            "결제위치": _row.get("결제위치", ""),
-            "배송유형": "판매자 배송",
-        })
 
-    _df = pd.DataFrame(_rows)
 
-    _buf = io.BytesIO()
-    with pd.ExcelWriter(_buf, engine="openpyxl") as writer:
-        _df.to_excel(writer, sheet_name="Delivery", index=False)
-        ws = writer.sheets["Delivery"]
-        from openpyxl.utils import get_column_letter
-        for col_name in ["묶음배송번호", "주문번호", "노출상품ID", "옵션ID"]:
-            if col_name in _df.columns:
-                col_idx = _df.columns.get_loc(col_name)
-                col_letter = get_column_letter(col_idx + 1)
-                for row_idx in range(2, len(_df) + 2):
-                    cell = ws[f"{col_letter}{row_idx}"]
-                    cell.value = str(int(cell.value)) if cell.value is not None else ""
-                    cell.number_format = "@"
-    _buf.seek(0)
-    return _buf.getvalue()
