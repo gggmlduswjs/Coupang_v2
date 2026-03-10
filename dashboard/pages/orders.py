@@ -849,8 +849,8 @@ def _render_delivery_list(instruct_all):
                     lambda x: _prev_map.get(int(x))
                 ).apply(lambda dt: (dt + timedelta(hours=9)).strftime("%m/%d %H:%M") if dt else "")
                 st.warning(
-                    f"이전에 다운로드한 적 있는 주문 {len(_prev_map)}건 — "
-                    "한진에 이미 올렸다면 중복 송장에 주의하세요."
+                    f"⚠️ 다운로드 후 송장 미등록 주문 {len(_prev_map)}건 — "
+                    "한진에 이미 올렸다면 **중복 송장**에 주의하세요."
                 )
                 st.dataframe(_overlap_detail, hide_index=True, use_container_width=True)
         except Exception as e:
@@ -1091,6 +1091,20 @@ def _render_invoice_upload(instruct_all, accounts_df):
 
             if _success_items:
                 _update_orders_status(_success_items)
+                # 송장 등록 성공한 주문은 delivery_list_logs에서 삭제
+                # → 다음 배송리스트 다운로드 시 중복 경고가 정확해짐
+                try:
+                    _success_box_ids = [int(s["shipmentBoxId"]) for s in _success_items]
+                    from dashboard.utils import engine as _eng
+                    from sqlalchemy import text as _sa_text
+                    with _eng.connect() as _conn:
+                        _conn.execute(
+                            _sa_text("DELETE FROM delivery_list_logs WHERE shipment_box_id = ANY(:ids)"),
+                            {"ids": _success_box_ids},
+                        )
+                        _conn.commit()
+                except Exception as e:
+                    logger.warning(f"배송리스트 로그 정리 실패: {e}")
 
             if _total_success > 0:
                 st.success(f"송장 등록 완료: 총 {_total_success}건 성공" + (f", {_total_fail}건 실패" if _total_fail else ""))
