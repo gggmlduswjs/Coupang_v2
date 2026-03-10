@@ -158,3 +158,47 @@ def save_ordersheets_to_db(acct, ordersheets, status):
 
     import threading
     threading.Thread(target=_do_save, daemon=True).start()
+
+
+def update_orders_status_after_invoice(success_items):
+    """송장 등록 성공 후 DB 주문 상태를 DEPARTURE로 업데이트.
+
+    Args:
+        success_items: list of dict with keys:
+            - shipmentBoxId (int)
+            - invoiceNumber (str)
+            - deliveryCompanyCode (str, e.g. "HANJIN")
+    """
+    if not success_items:
+        return
+
+    def _do_update():
+        try:
+            with engine.connect() as conn:
+                for item in success_items:
+                    box_id = item.get("shipmentBoxId")
+                    invoice = item.get("invoiceNumber", "")
+                    company = item.get("deliveryCompanyCode", "HANJIN")
+                    company_name = {"HANJIN": "한진택배"}.get(company, company)
+                    if not box_id:
+                        continue
+                    conn.execute(sa_text("""
+                        UPDATE orders
+                        SET status = 'DEPARTURE',
+                            invoice_number = :invoice,
+                            delivery_company_name = :company_name,
+                            updated_at = :updated_at
+                        WHERE shipment_box_id = :box_id
+                          AND status = 'INSTRUCT'
+                    """), {
+                        "box_id": int(box_id),
+                        "invoice": str(invoice).strip(),
+                        "company_name": company_name,
+                        "updated_at": datetime.now().isoformat(),
+                    })
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"송장 등록 후 DB 상태 업데이트 오류: {e}")
+
+    import threading
+    threading.Thread(target=_do_update, daemon=True).start()

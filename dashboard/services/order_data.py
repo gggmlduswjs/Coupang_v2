@@ -255,3 +255,143 @@ def sync_live_orders(accounts_df):
     clear_order_caches()
     result = load_all_orders_live(accounts_df)
     return len(result) if not result.empty else 0
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 공유 DeliveryList 생성 로직
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def build_delivery_rows(orders_df):
+    """주문 DataFrame → 쿠팡 DeliveryList 40컬럼 행 목록 변환.
+
+    Returns:
+        list[dict]: 각 행이 DeliveryList 한 줄에 해당하는 딕셔너리 목록.
+        _account_id, _vendor_item_id 내부 컬럼 포함.
+    """
+    rows = []
+    for idx, (_i, row) in enumerate(orders_df.iterrows(), 1):
+        rows.append({
+            "번호": idx,
+            "묶음배송번호": int(row["묶음배송번호"]),
+            "주문번호": int(row["주문번호"]),
+            "택배사": "한진택배",
+            "운송장번호": "",
+            "분리배송 Y/N": "분리배송가능" if row.get("분리배송가능") else "분리배송불가",
+            "분리배송 출고예정일": "",
+            "주문시 출고예정일": row.get("주문시출고예정일", ""),
+            "출고일(발송일)": "",
+            "주문일": row.get("주문일시", row.get("주문일", "")),
+            "등록상품명": str(row.get("상품명") or ""),
+            "등록옵션명": row.get("등록옵션명") or row.get("옵션명", ""),
+            "노출상품명(옵션명)": f"{row.get('상품명', '')}, {row.get('옵션명', '')}",
+            "노출상품ID": str(row.get("_seller_product_id", "")),
+            "옵션ID": str(row.get("_vendor_item_id", "")),
+            "최초등록등록상품명/옵션명": row.get("최초등록상품옵션명", ""),
+            "업체상품코드": row.get("업체상품코드", ""),
+            "바코드": "",
+            "결제액": int(row.get("결제금액", 0)),
+            "배송비구분": row.get("배송비구분", ""),
+            "배송비": row.get("배송비", 0),
+            "도서산간 추가배송비": int(row.get("도서산간추가배송비", 0)),
+            "구매수(수량)": int(row.get("수량", 0)),
+            "옵션판매가(판매단가)": int(row.get("판매단가", 0) or row.get("결제금액", 0)),
+            "구매자": row.get("구매자", ""),
+            "구매자전화번호": row.get("구매자전화번호", ""),
+            "수취인이름": row.get("수취인", ""),
+            "수취인전화번호": row.get("수취인전화번호", ""),
+            "우편번호": row.get("우편번호", ""),
+            "수취인 주소": row.get("수취인주소", ""),
+            "배송메세지": row.get("배송메세지", ""),
+            "상품별 추가메시지": "",
+            "주문자 추가메시지": "",
+            "배송완료일": "",
+            "구매확정일자": "",
+            "개인통관번호(PCCC)": row.get("개인통관번호", ""),
+            "통관용수취인전화번호": row.get("통관용전화번호", ""),
+            "기타": f"BOX:{int(row['묶음배송번호'])}",
+            "결제위치": row.get("결제위치", ""),
+            "배송유형": "판매자 배송",
+            "_account_id": int(row.get("_account_id", 0)),
+            "_vendor_item_id": int(row.get("_vendor_item_id", 0)),
+        })
+    return rows
+
+
+def build_delivery_excel_bytes(orders_df, *, include_internal_cols=False, sort_and_color=True):
+    """주문 DataFrame → DeliveryList 엑셀 bytes.
+
+    Args:
+        orders_df: INSTRUCT 주문 DataFrame
+        include_internal_cols: True면 _account_id, _vendor_item_id 포함
+        sort_and_color: True면 책별 정렬 + 색상 + 픽킹리스트 시트 포함
+
+    Returns:
+        (bytes, DataFrame): 엑셀 바이트, 내부 컬럼 포함된 DataFrame (세션 저장용)
+    """
+    import io
+    from datetime import date
+
+    dl_rows = build_delivery_rows(orders_df)
+    dl_df = pd.DataFrame(dl_rows)
+    dl_df["등록상품명"] = dl_df["등록상품명"].fillna("").astype(str)
+
+    if sort_and_color:
+        # 묶음배송 구분: 단건 먼저, 묶음 뒤로 + 같은 책끼리 그룹핑
+        box_counts = dl_df.groupby("묶음배송번호")["묶음배송번호"].transform("count")
+        dl_df["_is_bundle"] = (box_counts > 1).astype(int)
+        dl_df["_bundle_first_book"] = dl_df.groupby("묶음배송번호")["등록상품명"].transform("first")
+        dl_df["_is_single_qty"] = (dl_df["구매수(수량)"] <= 1).astype(int)
+        dl_df = dl_df.sort_values(
+            ["_is_bundle", "_bundle_first_book", "등록상품명", "_is_single_qty", "묶음배송번호"]
+        ).reset_index(drop=True)
+        dl_df = dl_df.drop(columns=["_is_bundle", "_bundle_first_book", "_is_single_qty"])
+        dl_df["번호"] = range(1, len(dl_df) + 1)
+
+    # 엑셀 출력용 (내부 컬럼 제외)
+    excel_cols = [c for c in dl_df.columns if not c.startswith("_")]
+    dl_excel = dl_df[excel_cols].copy()
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        dl_excel.to_excel(writer, sheet_name="Delivery", index=False)
+        ws = writer.sheets["Delivery"]
+        from openpyxl.utils import get_column_letter
+
+        # 텍스트 포맷 (지수 표기 방지)
+        for col_name in ["묶음배송번호", "주문번호", "노출상품ID", "옵션ID"]:
+            if col_name in dl_excel.columns:
+                col_idx = dl_excel.columns.get_loc(col_name)
+                col_letter = get_column_letter(col_idx + 1)
+                for row_idx in range(2, len(dl_excel) + 2):
+                    cell = ws[f"{col_letter}{row_idx}"]
+                    cell.value = str(int(cell.value)) if cell.value is not None else ""
+                    cell.number_format = "@"
+
+        if sort_and_color:
+            from openpyxl.styles import PatternFill
+            # 같은 책 첫 행에 색상 표시
+            prev_book = None
+            fill = PatternFill(start_color="D9E8FB", end_color="D9E8FB", fill_type="solid")
+            for row_idx, book in enumerate(dl_excel["등록상품명"], start=2):
+                if book != prev_book:
+                    for c in range(1, len(dl_excel.columns) + 1):
+                        ws.cell(row=row_idx, column=c).fill = fill
+                    prev_book = book
+
+            # 픽킹리스트 시트
+            pick_summary = (
+                dl_df.groupby("등록상품명")
+                .agg(건수=("묶음배송번호", "count"), 총수량=("구매수(수량)", "sum"))
+                .sort_index()
+                .reset_index()
+            )
+            pick_summary.columns = ["도서명", "주문건수", "총수량"]
+            pick_summary.to_excel(writer, sheet_name="픽킹리스트", index=False)
+            ws2 = writer.sheets["픽킹리스트"]
+            ws2.column_dimensions["A"].width = 60
+            ws2.column_dimensions["B"].width = 12
+            ws2.column_dimensions["C"].width = 12
+
+    buf.seek(0)
+    return buf.getvalue(), dl_df
