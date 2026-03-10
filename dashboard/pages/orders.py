@@ -810,41 +810,46 @@ def _render_delivery_list(instruct_all):
             st.info("상품준비중 주문이 없습니다.")
             return
 
-        _dl_orders = instruct_all.copy()
-        _acct_counts = _dl_orders.groupby("계정").size().reset_index(name="건수")
-        st.dataframe(_acct_counts, hide_index=True)
-
-        # 공유 함수로 엑셀 생성
-        _xl_bytes, _dl_df = build_delivery_excel_bytes(_dl_orders, sort_and_color=True)
-
-        # 세션에 저장 (송장 매칭용)
-        st.session_state["_delivery_list_df"] = _dl_df.copy()
-
-        # ── 중복 다운로드 방지 (DB 기반) ──
-        _current_boxes = set(int(b) for b in _dl_df["묶음배송번호"])
         try:
-            _db = SessionLocal()
-            _existing = _db.query(DeliveryListLog.shipment_box_id).filter(
-                DeliveryListLog.shipment_box_id.in_(list(_current_boxes))
-            ).all()
-            _db.close()
-            _overlap_boxes = {r[0] for r in _existing}
-            _overlap = _current_boxes & _overlap_boxes
+            _dl_orders = instruct_all.copy()
+            _acct_counts = _dl_orders.groupby("계정").size().reset_index(name="건수")
+            st.dataframe(_acct_counts, hide_index=True)
+
+            # 공유 함수로 엑셀 생성
+            _xl_bytes, _dl_df = build_delivery_excel_bytes(_dl_orders, sort_and_color=True)
+
+            # 세션에 저장 (송장 매칭용)
+            st.session_state["_delivery_list_df"] = _dl_df.copy()
+
+            # ── 중복 다운로드 방지 (DB 기반) ──
+            _current_boxes = set(int(b) for b in _dl_df["묶음배송번호"])
+            try:
+                _db = SessionLocal()
+                _existing = _db.query(DeliveryListLog.shipment_box_id).filter(
+                    DeliveryListLog.shipment_box_id.in_(list(_current_boxes))
+                ).all()
+                _db.close()
+                _overlap_boxes = {r[0] for r in _existing}
+                _overlap = _current_boxes & _overlap_boxes
+            except Exception as e:
+                logger.warning(f"배송리스트 중복 체크 실패: {e}")
+                _overlap = set()
+            if _overlap:
+                st.error(
+                    f"⚠️ 이미 배송리스트를 다운받은 주문 {len(_overlap)}건이 포함되어 있습니다.\n\n"
+                    "같은 주문을 한진에 2번 입력하면 **송장이 중복 발급**됩니다!"
+                )
+                _force_dl = st.checkbox(
+                    "중복 확인했음 — 그래도 다운로드",
+                    key="t2_force_dl",
+                    value=False,
+                )
+                if not _force_dl:
+                    return
         except Exception as e:
-            logger.warning(f"배송리스트 중복 체크 실패: {e}")
-            _overlap = set()
-        if _overlap:
-            st.error(
-                f"⚠️ 이미 배송리스트를 다운받은 주문 {len(_overlap)}건이 포함되어 있습니다.\n\n"
-                "같은 주문을 한진에 2번 입력하면 **송장이 중복 발급**됩니다!"
-            )
-            _force_dl = st.checkbox(
-                "중복 확인했음 — 그래도 다운로드",
-                key="t2_force_dl",
-                value=False,
-            )
-            if not _force_dl:
-                return
+            st.error(f"배송리스트 생성 오류: {e}")
+            logger.exception("배송리스트 생성 오류")
+            return
 
         # 책별 픽킹 요약
         _pick_summary = (
