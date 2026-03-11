@@ -538,7 +538,7 @@ def _render_today_dashboard():
 
     _c1, _c2, _c3, _c4, _c5 = st.columns(5)
     _c1.metric("오늘 주문", f"{int(_k.get('today_orders', 0)):,}건")
-    _c2.metric("배송리스트", f"다운로드 {int(_k.get('today_dl_batches', 0))}회 ({int(_k.get('today_dl_rows', 0))}box)")
+    _c2.metric("배송리스트", f"{int(_k.get('today_dl_batches', 0))}회")
     _c3.metric("송장 등록", f"{int(_k.get('today_registered', 0)):,}건")
     _c4.metric("미등록 (전체)", f"{int(_k.get('total_pending', 0)):,}건",
                delta=f"{int(_k.get('total_pending', 0))}건" if int(_k.get("total_pending", 0)) > 0 else None,
