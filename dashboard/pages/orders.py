@@ -10,6 +10,7 @@ import logging
 from datetime import date, datetime, timedelta
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder
 
@@ -21,8 +22,10 @@ from core.constants import (
 )
 from dashboard.utils import (
     create_wing_client,
+    fmt_krw,
     query_df,
     query_df_cached,
+    render_kpi_row,
 )
 from dashboard.services.order_data import (
     load_all_orders_live,
@@ -108,8 +111,8 @@ def render(selected_account, accounts_df, account_names):
 
     st.divider()
 
-    # ── 3탭 ──
-    _tab1, _tab2, _tab3 = st.tabs(["결제완료", "상품준비중", "배송지시"])
+    # ── 4탭 ──
+    _tab1, _tab2, _tab3, _tab4 = st.tabs(["결제완료", "상품준비중", "배송지시", "📊 주문현황"])
 
     # ══════════════════════════════════════
     # 탭1: 결제완료 (ACCEPT) → 발주확인
@@ -407,10 +410,134 @@ def render(selected_account, accounts_df, account_names):
             gb3.configure_column("배송지", width=250)
             AgGrid(_t3_grid, gridOptions=gb3.build(), height=500, theme="streamlit", key="t3_grid")
 
+    # ══════════════════════════════════════
+    # 탭4: 📊 주문현황 (DB 시각화)
+    # ══════════════════════════════════════
+    with _tab4:
+        _render_order_stats()
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 하위 렌더 함수들
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def _render_order_stats():
+    """탭4: DB 주문현황 시각화"""
+    st.caption("DB에 저장된 주문 데이터 기준 (최근 30일)")
+
+    # ── (A) 상단 KPI ──
+    _kpi_df = query_df_cached("""
+        SELECT
+            COUNT(*) AS total_orders,
+            MAX(updated_at + INTERVAL '9 hours') AS last_sync,
+            COUNT(*) FILTER (WHERE (ordered_at + INTERVAL '9 hours')::date = (NOW() + INTERVAL '9 hours')::date) AS today_orders,
+            COALESCE(SUM(order_price) FILTER (WHERE (ordered_at + INTERVAL '9 hours')::date = (NOW() + INTERVAL '9 hours')::date), 0) AS today_revenue
+        FROM orders
+        WHERE ordered_at >= NOW() - INTERVAL '30 days'
+    """)
+
+    if _kpi_df.empty or _kpi_df.iloc[0]["total_orders"] == 0:
+        st.info("주문 데이터가 없습니다.")
+        return
+
+    _row = _kpi_df.iloc[0]
+    _last_sync = _row["last_sync"]
+    if pd.notna(_last_sync):
+        _elapsed = datetime.now() - pd.Timestamp(_last_sync).to_pydatetime()
+        _mins = int(_elapsed.total_seconds() // 60)
+        _sync_text = f"{_mins}분 전" if _mins < 60 else f"{_mins // 60}시간 전"
+    else:
+        _sync_text = "-"
+
+    render_kpi_row([
+        ("DB 총 주문 수 (30일)", f"{int(_row['total_orders']):,}건"),
+        ("최근 동기화", _sync_text),
+        ("오늘 주문", f"{int(_row['today_orders']):,}건"),
+        ("오늘 매출", fmt_krw(int(_row["today_revenue"]))),
+    ])
+
+    st.divider()
+
+    # ── (B) 2열 차트: 상태별 파이 + 계정별 바 ──
+    _col_left, _col_right = st.columns(2)
+
+    with _col_left:
+        _status_df = query_df_cached("""
+            SELECT status, COUNT(*) AS cnt
+            FROM orders
+            WHERE ordered_at >= NOW() - INTERVAL '30 days'
+            GROUP BY status
+        """)
+        if not _status_df.empty:
+            _status_df["상태"] = _status_df["status"].map(STATUS_MAP).fillna(_status_df["status"])
+            fig_pie = px.pie(
+                _status_df, names="상태", values="cnt",
+                title="상태별 주문 분포 (30일)",
+                template="plotly_white", height=350,
+            )
+            fig_pie.update_traces(textinfo="label+percent+value")
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+    with _col_right:
+        _acct_df = query_df_cached("""
+            SELECT a.account_name AS account, o.status, COUNT(*) AS cnt
+            FROM orders o
+            JOIN accounts a ON o.account_id = a.id
+            WHERE o.ordered_at >= NOW() - INTERVAL '30 days'
+            GROUP BY a.account_name, o.status
+        """)
+        if not _acct_df.empty:
+            _acct_df["상태"] = _acct_df["status"].map(STATUS_MAP).fillna(_acct_df["status"])
+            fig_bar = px.bar(
+                _acct_df, x="account", y="cnt", color="상태",
+                title="계정별 주문 수 (30일)",
+                labels={"account": "계정", "cnt": "주문 수"},
+                template="plotly_white", height=350,
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ── (C) 일별 주문 추이 ──
+    _daily_df = query_df_cached("""
+        SELECT (ordered_at + INTERVAL '9 hours')::date AS order_date, COUNT(*) AS cnt
+        FROM orders
+        WHERE ordered_at >= NOW() - INTERVAL '30 days'
+        GROUP BY order_date
+        ORDER BY order_date
+    """)
+    if not _daily_df.empty:
+        _daily_df["order_date"] = pd.to_datetime(_daily_df["order_date"])
+        _all_dates = pd.date_range(_daily_df["order_date"].min(), _daily_df["order_date"].max())
+        _daily_df = _daily_df.set_index("order_date").reindex(_all_dates, fill_value=0).rename_axis("order_date").reset_index()
+        fig_area = px.area(
+            _daily_df, x="order_date", y="cnt",
+            title="일별 주문 추이 (30일)",
+            labels={"order_date": "날짜", "cnt": "주문 수"},
+            template="plotly_white", height=350,
+        )
+        st.plotly_chart(fig_area, use_container_width=True)
+
+    # ── (D) 일매출 추이 ──
+    _rev_df = query_df_cached("""
+        SELECT (ordered_at + INTERVAL '9 hours')::date AS order_date,
+               COALESCE(SUM(order_price), 0) AS revenue
+        FROM orders
+        WHERE ordered_at >= NOW() - INTERVAL '30 days' AND canceled = false
+        GROUP BY order_date
+        ORDER BY order_date
+    """)
+    if not _rev_df.empty:
+        _rev_df["order_date"] = pd.to_datetime(_rev_df["order_date"])
+        _all_dates_r = pd.date_range(_rev_df["order_date"].min(), _rev_df["order_date"].max())
+        _rev_df = _rev_df.set_index("order_date").reindex(_all_dates_r, fill_value=0).rename_axis("order_date").reset_index()
+        _rev_df["revenue_man"] = _rev_df["revenue"] / 10000
+        fig_rev = px.bar(
+            _rev_df, x="order_date", y="revenue_man",
+            title="일별 매출 추이 (30일, 만원)",
+            labels={"order_date": "날짜", "revenue_man": "매출 (만원)"},
+            template="plotly_white", height=350,
+        )
+        st.plotly_chart(fig_rev, use_container_width=True)
 
 
 def _render_cancel_section(accounts_df, account_names, _accept_all, _instruct_live):
