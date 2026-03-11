@@ -4,7 +4,7 @@
 탭1: 결제완료 (ACCEPT) → 발주확인
 탭2: 상품준비중 (INSTRUCT) → Stepper (다운로드→한진→송장등록)
 탭3: 배송현황 (DEPARTURE+) → 조회 전용
-탭4: 📊 운영현황 → 오늘 현황 / 이력 검색
+탭4: 📊 운영현황 → 검색/KPI/대기주문/배치요약/다운로드/이력
 """
 import io
 import logging
@@ -495,7 +495,7 @@ def render(selected_account, accounts_df, account_names):
     # 탭4: 📊 운영현황 (오늘 현황 / 이력 검색)
     # ══════════════════════════════════════
     with _tab4:
-        _render_order_stats()
+        _render_order_stats(_all_orders, accounts_df)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -503,22 +503,90 @@ def render(selected_account, accounts_df, account_names):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def _render_order_stats():
-    """탭4: 운영 현황 — 오늘 현황 / 이력 검색 분리"""
+def _render_order_stats(all_orders, accounts_df):
+    """탭4: 운영 현황 — 단일 스크롤 페이지 (검색 → KPI → 대기주문 → 배치요약 → 다운로드 → 이력)"""
 
-    _sub_mode = st.radio(
-        "보기", ["오늘 현황", "이력 검색"],
-        horizontal=True, key="t4_sub_mode", label_visibility="collapsed",
-    )
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Section 0: 빠른 검색 (최상단)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    _sc1, _sc2 = st.columns([4, 1])
+    with _sc1:
+        _search_q = st.text_input(
+            "🔍", placeholder="수취인 또는 상품명 검색",
+            key="t4_quick_search", label_visibility="collapsed",
+        )
+    with _sc2:
+        _search_days = st.selectbox(
+            "기간", [7, 14, 30], index=2,
+            format_func=lambda d: f"{d}일",
+            key="t4_search_days", label_visibility="collapsed",
+        )
 
-    if _sub_mode == "오늘 현황":
-        _render_today_dashboard()
-    else:
-        _render_history_search()
+    if _search_q and _search_q.strip():
+        _q = _search_q.strip()
+        _results_frames = []
 
+        # 1) API 실시간 데이터 (all_orders) 인메모리 필터
+        if not all_orders.empty:
+            _mask = (
+                all_orders["수취인"].str.contains(_q, case=False, na=False)
+                | all_orders["상품명"].str.contains(_q, case=False, na=False)
+                | all_orders["옵션명"].str.contains(_q, case=False, na=False)
+            )
+            _api_hits = all_orders[_mask].copy()
+            if not _api_hits.empty:
+                _api_hits["_source"] = "API"
+                _results_frames.append(_api_hits)
 
-def _render_today_dashboard():
-    """오늘의 운영 요약 — KPI + 배송리스트/발주서 최신"""
+        # 2) DB 과거 데이터 (FINAL_DELIVERY 등)
+        _db_hits = query_df("""
+            SELECT
+                a.account_name AS "계정",
+                o.receiver_name AS "수취인",
+                o.vendor_item_name AS "상품명",
+                o.shipping_count AS "수량",
+                o.status AS "상태",
+                o.invoice_number AS "운송장번호",
+                CAST(o.ordered_at + INTERVAL '9 hours' AS timestamp) AS "주문일시",
+                o.shipment_box_id AS "묶음배송번호"
+            FROM orders o
+            JOIN accounts a ON o.account_id = a.id
+            WHERE o.ordered_at >= CURRENT_DATE - :days * INTERVAL '1 day'
+              AND o.canceled = false
+              AND (o.receiver_name LIKE :kw OR o.vendor_item_name LIKE :kw)
+            ORDER BY o.ordered_at DESC
+            LIMIT 200
+        """, {"days": _search_days, "kw": f"%{_q}%"})
+
+        if not _db_hits.empty:
+            _db_hits["_source"] = "DB"
+            _results_frames.append(_db_hits)
+
+        if _results_frames:
+            _combined = pd.concat(_results_frames, ignore_index=True)
+            # 중복 제거 (묶음배송번호 기준, API 우선)
+            _combined["_priority"] = _combined["_source"].map({"API": 0, "DB": 1})
+            _combined = _combined.sort_values("_priority").drop_duplicates(
+                subset=["묶음배송번호"], keep="first"
+            )
+            _combined["상태(한글)"] = _combined["상태"].map(STATUS_MAP).fillna(_combined["상태"])
+            _combined["주문일시"] = pd.to_datetime(_combined["주문일시"], errors="coerce").dt.strftime("%m/%d %H:%M")
+
+            _show_cols = ["주문일시", "계정", "수취인", "상품명", "수량", "상태(한글)", "운송장번호"]
+            _show_cols = [c for c in _show_cols if c in _combined.columns]
+            st.caption(f"검색 결과: {len(_combined)}건")
+            st.dataframe(
+                _combined[_show_cols], hide_index=True, use_container_width=True,
+                column_config={"상품명": st.column_config.TextColumn(width="large")},
+            )
+        else:
+            st.info(f"'{_q}' 검색 결과 없음 (최근 {_search_days}일)")
+
+        st.divider()
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Section 1: KPI
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     _kpi = query_df("""
         SELECT
             (SELECT COUNT(DISTINCT shipment_box_id) FROM orders
@@ -526,8 +594,6 @@ def _render_today_dashboard():
                AND canceled = false) AS today_orders,
             (SELECT COUNT(DISTINCT batch_id) FROM delivery_list_logs
              WHERE (downloaded_at + INTERVAL '9 hours')::date = CURRENT_DATE) AS today_dl_batches,
-            (SELECT COUNT(*) FROM delivery_list_logs
-             WHERE (downloaded_at + INTERVAL '9 hours')::date = CURRENT_DATE) AS today_dl_rows,
             (SELECT COUNT(*) FROM delivery_list_logs
              WHERE registered = true
                AND (downloaded_at + INTERVAL '9 hours')::date = CURRENT_DATE) AS today_registered,
@@ -549,201 +615,270 @@ def _render_today_dashboard():
 
     st.divider()
 
-    # 최근 배송리스트 배치 (상위 5개)
-    st.subheader("최근 배송리스트")
-    _dl_batches = query_df("""
-        SELECT
-            d.batch_id,
-            (MIN(d.downloaded_at) + INTERVAL '9 hours')::timestamp AS 다운로드일시,
-            COUNT(*) AS 총건수,
-            SUM(CASE WHEN d.registered THEN 1 ELSE 0 END) AS 등록완료,
-            SUM(CASE WHEN NOT d.registered THEN 1 ELSE 0 END) AS 미등록
-        FROM delivery_list_logs d
-        WHERE d.batch_id IS NOT NULL
-        GROUP BY d.batch_id
-        ORDER BY MIN(d.downloaded_at) DESC
-        LIMIT 5
-    """)
-
-    if _dl_batches.empty:
-        st.info("배송리스트 이력이 없습니다.")
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Section 2: 처리 대기 주문 (ACCEPT / INSTRUCT)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if not all_orders.empty:
+        _pending = all_orders[
+            all_orders["상태"].isin(["ACCEPT", "INSTRUCT"]) & ~all_orders["취소"]
+        ].copy()
     else:
-        _dl_batches["다운로드일시"] = pd.to_datetime(_dl_batches["다운로드일시"]).dt.strftime("%m/%d %H:%M")
-        _dl_batches["상태"] = _dl_batches.apply(
-            lambda r: "✅ 전체 등록" if r["미등록"] == 0 else f"⏳ 미등록 {int(r['미등록'])}건", axis=1
-        )
-        st.dataframe(
-            _dl_batches[["다운로드일시", "총건수", "등록완료", "미등록", "상태"]],
-            hide_index=True, use_container_width=True,
-            column_config={
-                "총건수": st.column_config.NumberColumn(format="%d건"),
-                "등록완료": st.column_config.NumberColumn(format="%d건"),
-                "미등록": st.column_config.NumberColumn(format="%d건"),
-            },
-        )
+        _pending = pd.DataFrame()
 
-    # 최근 발주서 배치 (상위 5개)
-    st.subheader("최근 발주서")
-    _po_batches = query_df("""
-        SELECT
-            p.batch_id,
-            (MIN(p.ordered_at) + INTERVAL '9 hours')::timestamp AS 발주일시,
-            COUNT(*) AS 총건수,
-            SUM(p.quantity) AS 총수량,
-            STRING_AGG(DISTINCT COALESCE(p.distributor, '미지정'), ', ') AS 거래처
-        FROM purchase_order_logs p
-        WHERE p.batch_id IS NOT NULL
-        GROUP BY p.batch_id
-        ORDER BY MIN(p.ordered_at) DESC
-        LIMIT 5
-    """)
-
-    if _po_batches.empty:
-        st.info("발주서 이력이 없습니다.")
+    if _pending.empty:
+        st.info("처리 대기 주문 없음")
     else:
-        _po_batches["발주일시"] = pd.to_datetime(_po_batches["발주일시"]).dt.strftime("%m/%d %H:%M")
-        st.dataframe(
-            _po_batches[["발주일시", "총건수", "총수량", "거래처"]],
-            hide_index=True, use_container_width=True,
-            column_config={
-                "총건수": st.column_config.NumberColumn(format="%d건"),
-                "총수량": st.column_config.NumberColumn(format="%d권"),
-            },
-        )
+        # 합포장 감지: 묶음배송번호에 2건 이상 → 📦
+        _box_counts = _pending.groupby("묶음배송번호").size()
+        _multi_boxes = set(_box_counts[_box_counts > 1].index)
+        _pending["합포장"] = _pending["묶음배송번호"].apply(lambda x: "📦" if x in _multi_boxes else "")
 
-    # ── 당일 합산 발주서 (orders 테이블 기반 — 전체 주문 포함) ──
+        _accept_pending = _pending[_pending["상태"] == "ACCEPT"]
+        _instruct_pending = _pending[_pending["상태"] == "INSTRUCT"]
+
+        st.subheader(f"처리 대기 주문 ({len(_pending)}건)")
+
+        _pc1, _pc2 = st.columns(2)
+        _pending_cols = ["합포장", "계정", "수취인", "옵션명", "수량", "주문일시"]
+
+        with _pc1:
+            _n_accept = len(_accept_pending)
+            st.markdown(f"**결제완료 ({_n_accept}건)**")
+            if _accept_pending.empty:
+                st.caption("없음")
+            else:
+                _ad = _accept_pending[_pending_cols].copy()
+                _ad["주문일시"] = pd.to_datetime(_ad["주문일시"], errors="coerce").dt.strftime("%m/%d %H:%M")
+                st.dataframe(_ad, hide_index=True, use_container_width=True, height=300)
+
+        with _pc2:
+            _n_instruct = len(_instruct_pending)
+            st.markdown(f"**상품준비중 ({_n_instruct}건)**")
+            if _instruct_pending.empty:
+                st.caption("없음")
+            else:
+                _id = _instruct_pending[_pending_cols].copy()
+                _id["주문일시"] = pd.to_datetime(_id["주문일시"], errors="coerce").dt.strftime("%m/%d %H:%M")
+                st.dataframe(_id, hide_index=True, use_container_width=True, height=300)
+
+        if _multi_boxes:
+            st.caption(f"📦 합포장 {len(_multi_boxes)}건 — 같은 묶음배송번호에 2건 이상")
+
     st.divider()
-    st.subheader("당일 합산 발주서")
 
-    _po_orders_raw = query_df("""
-        SELECT DISTINCT ON (o.shipment_box_id)
-               o.shipment_box_id AS "묶음배송번호",
-               o.order_id AS "주문번호",
-               o.seller_product_name AS "상품명",
-               o.vendor_item_name AS "옵션명",
-               o.shipping_count AS "수량",
-               o.order_price AS "결제금액",
-               o.account_id AS "_account_id",
-               o.vendor_item_id AS "_vendor_item_id",
-               o.seller_product_id AS "_seller_product_id"
-        FROM orders o
-        WHERE (o.ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
-          AND o.canceled = false
-        ORDER BY o.shipment_box_id, o.updated_at DESC
-    """)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Section 3: 배치 요약 (2컬럼)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    _bc1, _bc2 = st.columns(2)
 
-    if _po_orders_raw.empty:
-        st.info("오늘 주문이 없습니다.")
-    else:
-        _po_enriched = _enrich_purchase_order_data(_po_orders_raw)
-        _po_enriched["거래처"] = _po_enriched["거래처"].fillna("미지정")
-        _po_enriched["출판사"] = _po_enriched["출판사"].fillna("")
-
-        _po_enriched["_group_key"] = _po_enriched.apply(
-            lambda r: r["ISBN"] if r.get("ISBN") else r["도서명"], axis=1
-        )
-        _po_agg = _po_enriched.groupby(["거래처", "출판사", "_group_key"]).agg(
-            도서명=("도서명", "first"), ISBN=("ISBN", "first"), 주문수량=("수량", "sum"),
-        ).reset_index().drop(columns=["_group_key"])
-        _po_agg = _po_agg.sort_values(["거래처", "출판사", "도서명"])
-
-        # 거래처별 요약 테이블
-        _po_summary = _po_agg.groupby("거래처").agg(
-            종수=("도서명", "count"), 총수량=("주문수량", "sum"),
-        ).reset_index().sort_values("총수량", ascending=False)
-        st.dataframe(
-            _po_summary, hide_index=True, use_container_width=True,
-            column_config={
-                "종수": st.column_config.NumberColumn(format="%d종"),
-                "총수량": st.column_config.NumberColumn(format="%d권"),
-            },
-        )
-
-        with st.expander(f"발주 상세 ({len(_po_agg)}종 / {int(_po_agg['주문수량'].sum())}권)"):
+    with _bc1:
+        st.markdown("**최근 배송리스트**")
+        _dl_batches = query_df("""
+            SELECT
+                d.batch_id,
+                (MIN(d.downloaded_at) + INTERVAL '9 hours')::timestamp AS 다운로드일시,
+                COUNT(*) AS 총건수,
+                SUM(CASE WHEN d.registered THEN 1 ELSE 0 END) AS 등록완료,
+                SUM(CASE WHEN NOT d.registered THEN 1 ELSE 0 END) AS 미등록
+            FROM delivery_list_logs d
+            WHERE d.batch_id IS NOT NULL
+            GROUP BY d.batch_id
+            ORDER BY MIN(d.downloaded_at) DESC
+            LIMIT 5
+        """)
+        if _dl_batches.empty:
+            st.caption("이력 없음")
+        else:
+            _dl_batches["다운로드일시"] = pd.to_datetime(_dl_batches["다운로드일시"]).dt.strftime("%m/%d %H:%M")
+            _dl_batches["상태"] = _dl_batches.apply(
+                lambda r: "✅ 전체 등록" if r["미등록"] == 0 else f"⏳ 미등록 {int(r['미등록'])}건", axis=1
+            )
             st.dataframe(
-                _po_agg, hide_index=True, use_container_width=True,
+                _dl_batches[["다운로드일시", "총건수", "등록완료", "미등록", "상태"]],
+                hide_index=True, use_container_width=True,
                 column_config={
-                    "도서명": st.column_config.TextColumn(width="large"),
-                    "주문수량": st.column_config.NumberColumn(format="%d권"),
+                    "총건수": st.column_config.NumberColumn(format="%d건"),
+                    "등록완료": st.column_config.NumberColumn(format="%d건"),
+                    "미등록": st.column_config.NumberColumn(format="%d건"),
                 },
             )
 
-        _store_name = st.session_state.get("order_store_name", "잉글리쉬존")
-        _xl_buf = _build_purchase_order_excel(_po_agg, _store_name)
-        _today_str = date.today().strftime("%Y%m%d")
-        st.download_button(
-            "📥 당일 합산 발주서 다운로드",
-            data=_xl_buf,
-            file_name=f"발주서_합산_{_today_str}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="t4_po_merged_dl",
-        )
+    with _bc2:
+        st.markdown("**최근 발주서**")
+        _po_batches = query_df("""
+            SELECT
+                p.batch_id,
+                (MIN(p.ordered_at) + INTERVAL '9 hours')::timestamp AS 발주일시,
+                COUNT(*) AS 총건수,
+                SUM(p.quantity) AS 총수량,
+                STRING_AGG(DISTINCT COALESCE(p.distributor, '미지정'), ', ') AS 거래처
+            FROM purchase_order_logs p
+            WHERE p.batch_id IS NOT NULL
+            GROUP BY p.batch_id
+            ORDER BY MIN(p.ordered_at) DESC
+            LIMIT 5
+        """)
+        if _po_batches.empty:
+            st.caption("이력 없음")
+        else:
+            _po_batches["발주일시"] = pd.to_datetime(_po_batches["발주일시"]).dt.strftime("%m/%d %H:%M")
+            st.dataframe(
+                _po_batches[["발주일시", "총건수", "총수량", "거래처"]],
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "총건수": st.column_config.NumberColumn(format="%d건"),
+                    "총수량": st.column_config.NumberColumn(format="%d권"),
+                },
+            )
 
-        st.caption(f"오늘 주문 {len(_po_orders_raw)}건 기준 (orders 테이블 직접 조회)")
-
-    # ── 당일 극동 출고 엑셀 ──
     st.divider()
-    st.subheader("당일 극동 출고 엑셀")
 
-    if _po_today_raw.empty:
-        st.info("오늘 처리된 발주 내역이 없습니다.")
-    else:
-        _gk_po = _po_today_raw.copy()
-        _gk_po = _gk_po.rename(columns={
-            "book_title": "도서명", "isbn": "상품바코드",
-            "publisher": "출판사", "quantity": "수량",
-            "list_price": "정가", "author": "저자",
-            "pub_year": "출판년도", "supply_rate": "공급률",
-        })
-        _gk_po["상품바코드"] = _gk_po["상품바코드"].fillna("").astype(str)
-        _gk_po["도서명"] = _gk_po["도서명"].fillna("").astype(str)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Section 4: 다운로드 (expander)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with st.expander("📋 당일 합산 발주서"):
+        _po_orders_raw = query_df("""
+            SELECT DISTINCT ON (o.shipment_box_id)
+                   o.shipment_box_id AS "묶음배송번호",
+                   o.order_id AS "주문번호",
+                   o.seller_product_name AS "상품명",
+                   o.vendor_item_name AS "옵션명",
+                   o.shipping_count AS "수량",
+                   o.order_price AS "결제금액",
+                   o.account_id AS "_account_id",
+                   o.vendor_item_id AS "_vendor_item_id",
+                   o.seller_product_id AS "_seller_product_id"
+            FROM orders o
+            WHERE (o.ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
+              AND o.canceled = false
+            ORDER BY o.shipment_box_id, o.updated_at DESC
+        """)
 
-        _gk_key = _gk_po.apply(lambda r: r["상품바코드"] if r["상품바코드"] else r["도서명"], axis=1)
-        _gk_po["_key"] = _gk_key
-        _gk_agg = _gk_po.groupby("_key").agg(
-            상품바코드=("상품바코드", "first"),
-            상품명=("도서명", "first"),
-            정가=("정가", "first"),
-            수량=("수량", "sum"),
-            공급률=("공급률", "first"),
-            출판사=("출판사", "first"),
-            저자=("저자", "first"),
-            출판년도=("출판년도", "first"),
-        ).reset_index(drop=True)
+        if _po_orders_raw.empty:
+            st.info("오늘 주문이 없습니다.")
+        else:
+            _po_enriched = _enrich_purchase_order_data(_po_orders_raw)
+            _po_enriched["거래처"] = _po_enriched["거래처"].fillna("미지정")
+            _po_enriched["출판사"] = _po_enriched["출판사"].fillna("")
 
-        _gk_show = _gk_agg[["상품바코드", "상품명", "수량", "출판사"]].copy()
-        st.dataframe(_gk_show, hide_index=True, use_container_width=True)
+            _po_enriched["_group_key"] = _po_enriched.apply(
+                lambda r: r["ISBN"] if r.get("ISBN") else r["도서명"], axis=1
+            )
+            _po_agg = _po_enriched.groupby(["거래처", "출판사", "_group_key"]).agg(
+                도서명=("도서명", "first"), ISBN=("ISBN", "first"), 주문수량=("수량", "sum"),
+            ).reset_index().drop(columns=["_group_key"])
+            _po_agg = _po_agg.sort_values(["거래처", "출판사", "도서명"])
 
-        _gk_result = pd.DataFrame()
-        _gk_result["NO."] = range(1, len(_gk_agg) + 1)
-        _gk_result["상품바코드"] = _gk_agg["상품바코드"].values
-        _gk_result["상품명"] = _gk_agg["상품명"].values
-        _gk_result["#"] = ""
-        _gk_result["정 가"] = _gk_agg["정가"].apply(lambda x: int(x) if pd.notna(x) else 0).values
-        _gk_result["수 량"] = _gk_agg["수량"].values
-        _gk_result["%"] = _gk_agg["공급률"].apply(lambda x: f"{x*100:.0f}" if pd.notna(x) and x else "").values
-        _gk_result["단 가"] = _gk_agg.apply(
-            lambda r: int(r["정가"] * r["공급률"]) if pd.notna(r["공급률"]) and r["공급률"] and pd.notna(r["정가"]) else (int(r["정가"]) if pd.notna(r["정가"]) else 0),
-            axis=1
-        ).values
-        _gk_result["금 액"] = (_gk_result["단 가"] * _gk_result["수 량"]).values
-        _gk_result[""] = ""
-        _gk_result["출판사"] = _gk_agg["출판사"].apply(lambda x: str(x) if pd.notna(x) else "").values
-        _gk_result["저자"] = _gk_agg["저자"].apply(lambda x: str(x) if pd.notna(x) else "").values
-        _gk_result["출판년도"] = _gk_agg["출판년도"].apply(lambda x: str(int(x)) if pd.notna(x) else "").values
+            _po_summary = _po_agg.groupby("거래처").agg(
+                종수=("도서명", "count"), 총수량=("주문수량", "sum"),
+            ).reset_index().sort_values("총수량", ascending=False)
+            st.dataframe(
+                _po_summary, hide_index=True, use_container_width=True,
+                column_config={
+                    "종수": st.column_config.NumberColumn(format="%d종"),
+                    "총수량": st.column_config.NumberColumn(format="%d권"),
+                },
+            )
 
-        _gk_buf = io.BytesIO()
-        with pd.ExcelWriter(_gk_buf, engine="openpyxl") as writer:
-            _gk_result.to_excel(writer, sheet_name="극동", index=False)
-        _gk_buf.seek(0)
+            with st.expander(f"발주 상세 ({len(_po_agg)}종 / {int(_po_agg['주문수량'].sum())}권)"):
+                st.dataframe(
+                    _po_agg, hide_index=True, use_container_width=True,
+                    column_config={
+                        "도서명": st.column_config.TextColumn(width="large"),
+                        "주문수량": st.column_config.NumberColumn(format="%d권"),
+                    },
+                )
 
-        st.download_button(
-            f"📥 극동 다운로드 ({len(_gk_agg)}종 / {int(_gk_agg['수량'].sum())}권)",
-            _gk_buf.getvalue(),
-            file_name=f"극동_{date.today().strftime('%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="t4_gk_xlsx_dl",
-        )
+            _store_name = st.session_state.get("order_store_name", "잉글리쉬존")
+            _xl_buf = _build_purchase_order_excel(_po_agg, _store_name)
+            _today_str = date.today().strftime("%Y%m%d")
+            st.download_button(
+                "📥 당일 합산 발주서 다운로드",
+                data=_xl_buf,
+                file_name=f"발주서_합산_{_today_str}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="t4_po_merged_dl",
+            )
+            st.caption(f"오늘 주문 {len(_po_orders_raw)}건 기준 (orders 테이블 직접 조회)")
+
+    with st.expander("📦 당일 극동 출고 엑셀"):
+        _gk_today = query_df("""
+            SELECT
+                p.book_title, p.isbn, p.publisher, p.quantity,
+                b.list_price, COALESCE(b.author, '') AS author,
+                b.year AS pub_year, pub.supply_rate
+            FROM purchase_order_logs p
+            LEFT JOIN books b ON p.isbn = b.isbn AND p.isbn IS NOT NULL AND p.isbn != ''
+            LEFT JOIN publishers pub ON b.publisher_id = pub.id
+            WHERE (p.ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
+              AND p.batch_id IS NOT NULL
+        """)
+
+        if _gk_today.empty:
+            st.info("오늘 처리된 발주 내역이 없습니다.")
+        else:
+            _gk_po = _gk_today.copy()
+            _gk_po = _gk_po.rename(columns={
+                "book_title": "도서명", "isbn": "상품바코드",
+                "publisher": "출판사", "quantity": "수량",
+                "list_price": "정가", "author": "저자",
+                "pub_year": "출판년도", "supply_rate": "공급률",
+            })
+            _gk_po["상품바코드"] = _gk_po["상품바코드"].fillna("").astype(str)
+            _gk_po["도서명"] = _gk_po["도서명"].fillna("").astype(str)
+
+            _gk_key = _gk_po.apply(lambda r: r["상품바코드"] if r["상품바코드"] else r["도서명"], axis=1)
+            _gk_po["_key"] = _gk_key
+            _gk_agg = _gk_po.groupby("_key").agg(
+                상품바코드=("상품바코드", "first"),
+                상품명=("도서명", "first"),
+                정가=("정가", "first"),
+                수량=("수량", "sum"),
+                공급률=("공급률", "first"),
+                출판사=("출판사", "first"),
+                저자=("저자", "first"),
+                출판년도=("출판년도", "first"),
+            ).reset_index(drop=True)
+
+            _gk_show = _gk_agg[["상품바코드", "상품명", "수량", "출판사"]].copy()
+            st.dataframe(_gk_show, hide_index=True, use_container_width=True)
+
+            _gk_result = pd.DataFrame()
+            _gk_result["NO."] = range(1, len(_gk_agg) + 1)
+            _gk_result["상품바코드"] = _gk_agg["상품바코드"].values
+            _gk_result["상품명"] = _gk_agg["상품명"].values
+            _gk_result["#"] = ""
+            _gk_result["정 가"] = _gk_agg["정가"].apply(lambda x: int(x) if pd.notna(x) else 0).values
+            _gk_result["수 량"] = _gk_agg["수량"].values
+            _gk_result["%"] = _gk_agg["공급률"].apply(lambda x: f"{x*100:.0f}" if pd.notna(x) and x else "").values
+            _gk_result["단 가"] = _gk_agg.apply(
+                lambda r: int(r["정가"] * r["공급률"]) if pd.notna(r["공급률"]) and r["공급률"] and pd.notna(r["정가"]) else (int(r["정가"]) if pd.notna(r["정가"]) else 0),
+                axis=1
+            ).values
+            _gk_result["금 액"] = (_gk_result["단 가"] * _gk_result["수 량"]).values
+            _gk_result[""] = ""
+            _gk_result["출판사"] = _gk_agg["출판사"].apply(lambda x: str(x) if pd.notna(x) else "").values
+            _gk_result["저자"] = _gk_agg["저자"].apply(lambda x: str(x) if pd.notna(x) else "").values
+            _gk_result["출판년도"] = _gk_agg["출판년도"].apply(lambda x: str(int(x)) if pd.notna(x) else "").values
+
+            _gk_buf = io.BytesIO()
+            with pd.ExcelWriter(_gk_buf, engine="openpyxl") as writer:
+                _gk_result.to_excel(writer, sheet_name="극동", index=False)
+            _gk_buf.seek(0)
+
+            st.download_button(
+                f"📥 극동 다운로드 ({len(_gk_agg)}종 / {int(_gk_agg['수량'].sum())}권)",
+                _gk_buf.getvalue(),
+                file_name=f"극동_{date.today().strftime('%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="t4_gk_xlsx_dl",
+            )
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Section 5: 이력 검색 (expander, collapsed)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with st.expander("📂 이력 검색", expanded=False):
+        _render_history_search()
 
 
 def _render_history_search():
