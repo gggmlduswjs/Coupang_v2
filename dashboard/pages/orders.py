@@ -61,6 +61,9 @@ def render(selected_account, accounts_df, account_names):
         if st.button("🔄 주문 새로고침", key="btn_live_refresh", use_container_width=True,
                      help="WING API에서 실시간 주문 조회", type="primary"):
             clear_order_caches()
+            for _sk in ("_step_purchase_order", "_step_geukdong", "_step_delivery_list",
+                        "_step_hanjin", "_step_invoice"):
+                st.session_state.pop(_sk, None)
             st.rerun()
     with _top_c2:
         _last_synced = st.session_state.get("order_last_synced")
@@ -136,20 +139,10 @@ def render(selected_account, accounts_df, account_names):
 
         st.divider()
 
-        # ── 발주확인 후 DeliveryList 다운로드 (rerun 후 표시) ──
-        if "_ack_delivery_excel" in st.session_state:
-            _ack_xl = st.session_state.pop("_ack_delivery_excel")
-            st.success(f"발주확인 완료 — DeliveryList 엑셀을 다운로드하세요.")
-            st.download_button(
-                f"📥 DeliveryList 다운로드 ({_ack_xl['count']}건)",
-                _ack_xl["data"],
-                file_name=_ack_xl["filename"],
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="t1_ack_dl",
-                type="primary",
-                use_container_width=True,
-            )
-            st.divider()
+        # ── 발주확인 완료 안내 (rerun 후 표시) ──
+        if "_ack_success_count" in st.session_state:
+            _ack_cnt = st.session_state.pop("_ack_success_count")
+            st.success(f"발주확인 완료 ({_ack_cnt}건) — '상품준비중' 탭에서 배송리스트를 다운로드하세요.")
 
         if _t1_data.empty:
             st.info("결제완료(ACCEPT) 상태의 주문이 없습니다.")
@@ -268,25 +261,8 @@ def render(selected_account, accounts_df, account_names):
                         _total_fail += len(_ack_ids)
 
                 if _total_success > 0:
-                    # 발주확인 후 배송지 재확인 (쿠팡 API 권고사항)
-                    # 결제완료 중 고객이 배송지를 변경할 수 있으므로 INSTRUCT 재조회
                     clear_order_caches()
-                    _refreshed = load_all_orders_live(accounts_df)
-                    _refreshed_instruct = _refreshed[_refreshed["상태"] == "INSTRUCT"].copy() if not _refreshed.empty else pd.DataFrame()
-                    if not _refreshed_instruct.empty:
-                        _ack_box_ids = _sel_data["묶음배송번호"].unique().tolist()
-                        _ack_orders = _refreshed_instruct[_refreshed_instruct["묶음배송번호"].isin(_ack_box_ids)]
-                        if not _ack_orders.empty:
-                            _ack_xl_bytes, _ = build_delivery_excel_bytes(_ack_orders, sort_and_color=False)
-                        else:
-                            _ack_xl_bytes, _ = build_delivery_excel_bytes(_sel_data, sort_and_color=False)
-                    else:
-                        _ack_xl_bytes, _ = build_delivery_excel_bytes(_sel_data, sort_and_color=False)
-                    st.session_state["_ack_delivery_excel"] = {
-                        "data": _ack_xl_bytes,
-                        "count": len(_sel_data),
-                        "filename": f"DeliveryList({date.today().isoformat()}).xlsx",
-                    }
+                    st.session_state["_ack_success_count"] = _total_success
                     st.rerun()
 
             # ── 주문 취소 ──
@@ -312,6 +288,24 @@ def render(selected_account, accounts_df, account_names):
         _ik1, _ik2 = st.columns(2)
         _ik1.metric("상품준비중 주문", f"{_inst_total:,}건")
         _ik2.metric("총 금액", f"₩{fmt_krw_short(_inst_amount)}")
+
+        # ── 스텝 진행 상황 ──
+        _step_defs = [
+            ("_step_purchase_order", "발주서"),
+            ("_step_geukdong", "극동"),
+            ("_step_delivery_list", "배송리스트"),
+            ("_step_hanjin", "한진"),
+            ("_step_invoice", "송장등록"),
+        ]
+        _sc = st.columns(len(_step_defs))
+        for _col, (_skey, _slabel) in zip(_sc, _step_defs):
+            _done = st.session_state.get(_skey, False)
+            _col.markdown(f"{'✅' if _done else '⬜'} **{_slabel}**")
+
+        # ── Flash 메시지 (rerun 후 표시) ──
+        if "_flash_messages" in st.session_state:
+            for _ftype, _fmsg in st.session_state.pop("_flash_messages"):
+                getattr(st, _ftype, st.info)(_fmsg)
 
         if _t2_instruct.empty:
             st.info("상품준비중(INSTRUCT) 상태의 주문이 없습니다.")
@@ -364,7 +358,7 @@ def render(selected_account, accounts_df, account_names):
             _render_geukdong_excel(_t2_filtered, accounts_df, key_prefix="t2")
 
             # 2-3. 배송리스트 다운로드
-            _render_delivery_list(_t2_filtered)
+            _render_delivery_list(_t2_filtered, accounts_df)
 
             # 2-4. 한진 N-Focus 송장 발급
             _render_hanjin_nfocus()
@@ -376,7 +370,7 @@ def render(selected_account, accounts_df, account_names):
     # 탭3: 배송지시 (DEPARTURE) — 조회 전용
     # ══════════════════════════════════════
     with _tab3:
-        st.caption("배송지시(출고완료) 주문 조회")
+        st.caption("배송지시(출고완료) 주문 조회 + 배송추적")
 
         _t3_accts = st.multiselect("계정", account_names, default=account_names, key="t3_acct")
 
@@ -397,16 +391,64 @@ def render(selected_account, accounts_df, account_names):
             _t3_display["상품/옵션/수량"] = _t3_display.apply(
                 lambda r: f"{r['상품명']} / {r['옵션명']} / {int(r['수량'])}권", axis=1
             )
-            _t3_cols = ["주문번호", "상품/옵션/수량", "택배사", "운송장번호", "수취인",
+            _HANJIN_TRACK = "https://www.hanjin.com/kor/CMS/DeliveryMgr/WaybillResult.do?wblnumText2={}&schLang=KR"
+            _t3_display["배송추적"] = _t3_display["운송장번호"].apply(
+                lambda x: _HANJIN_TRACK.format(str(x).strip()) if x and str(x).strip() else None
+            )
+            _t3_cols = ["주문번호", "상품/옵션/수량", "수취인", "운송장번호", "배송추적",
                         "수취인주소", "주문일시", "묶음배송번호", "계정"]
-            _t3_grid = _t3_display[_t3_cols].rename(columns={"수취인주소": "배송지"})
+            _t3_show = _t3_display[_t3_cols].rename(columns={"수취인주소": "배송지"})
 
-            gb3 = GridOptionsBuilder.from_dataframe(_t3_grid)
-            gb3.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)
-            gb3.configure_default_column(resizable=True, sorteable=True, filterable=True)
-            gb3.configure_column("상품/옵션/수량", width=350)
-            gb3.configure_column("배송지", width=250)
-            AgGrid(_t3_grid, gridOptions=gb3.build(), height=500, theme="streamlit", key="t3_grid")
+            st.dataframe(
+                _t3_show,
+                hide_index=True, use_container_width=True, height=500,
+                column_config={
+                    "상품/옵션/수량": st.column_config.TextColumn(width="large"),
+                    "배송지": st.column_config.TextColumn(width="medium"),
+                    "배송추적": st.column_config.LinkColumn("배송추적", display_text="추적"),
+                    "묶음배송번호": st.column_config.NumberColumn(format="%d"),
+                },
+            )
+
+        # ── 반품/교환 요청 확인 ──
+        with st.expander("반품/교환 요청 확인", expanded=False):
+            if st.button("반품/교환 요청 조회 (최근 30일)", key="t3_btn_returns"):
+                _return_results = []
+                _t3_from = (date.today() - timedelta(days=30)).isoformat()
+                _t3_to = date.today().isoformat()
+                _checked_aids = set()
+                _aid_list = _t3_data["_account_id"].unique().tolist() if not _t3_data.empty else []
+                if not _aid_list:
+                    _aid_list = accounts_df["id"].tolist()
+                for _aid in _aid_list:
+                    if int(_aid) in _checked_aids:
+                        continue
+                    _checked_aids.add(int(_aid))
+                    _acct_row = accounts_df[accounts_df["id"] == int(_aid)]
+                    if _acct_row.empty:
+                        continue
+                    _acct_row = _acct_row.iloc[0]
+                    _client = create_wing_client(_acct_row)
+                    if not _client:
+                        continue
+                    try:
+                        for _rs_code, _rs_label in [("UC", "반품접수"), ("CC", "수거완료"), ("RU", "출고중지")]:
+                            _reqs = _client.get_all_return_requests(_t3_from, _t3_to, status=_rs_code)
+                            for _req in _reqs:
+                                _return_results.append({
+                                    "계정": _acct_row["account_name"],
+                                    "유형": _rs_label,
+                                    "주문번호": _req.get("orderId"),
+                                    "사유": _req.get("cancelReason", ""),
+                                    "접수일": str(_req.get("createdAt", ""))[:10],
+                                })
+                    except Exception as e:
+                        st.warning(f"[{_acct_row['account_name']}] 조회 실패: {e}")
+                if _return_results:
+                    st.warning(f"반품/교환/출고중지 요청 {len(_return_results)}건")
+                    st.dataframe(pd.DataFrame(_return_results), hide_index=True, use_container_width=True)
+                else:
+                    st.success("최근 30일간 반품/교환/출고중지 요청이 없습니다.")
 
     # ══════════════════════════════════════
     # 탭4: 📊 주문현황 (DB 시각화)
@@ -922,215 +964,76 @@ def _build_purchase_order_excel(agg_df, store_name="잉글리쉬존"):
 
 
 def _render_purchase_order(instruct_all, accounts_df, key_prefix="t2"):
-    """발주서 생성 — 실시간 INSTRUCT + 저장된 이력 기반"""
+    """발주서 생성 — 실시간 INSTRUCT 기반 (이력은 탭4에서 조회)"""
 
     with st.expander(f"📋 발주서 ({len(instruct_all)}건)", expanded=False):
-        # ── 탭: 실시간 발주서 / 발주 이력 ──
-        _po_tab1, _po_tab2 = st.tabs(["실시간 발주서 (현재 상품준비중)", "발주 이력 (어제 저장분)"])
+        if instruct_all.empty:
+            st.info("발주서 대상 주문이 없습니다.")
+        else:
+            _dist_orders = _enrich_purchase_order_data(instruct_all)
 
-        # ── 탭1: 기존 실시간 발주서 ──
-        with _po_tab1:
-            if instruct_all.empty:
-                st.info("발주서 대상 주문이 없습니다.")
-            else:
-                _dist_orders = _enrich_purchase_order_data(instruct_all)
+            _isbn_found = _dist_orders["ISBN"].apply(lambda x: bool(x and str(x).strip())).sum()
+            _isbn_missing = len(_dist_orders) - _isbn_found
+            if _isbn_missing > 0:
+                st.caption("ISBN 없음: {}/{}건 (삭제된 상품 또는 세트물은 정상)".format(_isbn_missing, len(_dist_orders)))
 
-                _isbn_found = _dist_orders["ISBN"].apply(lambda x: bool(x and str(x).strip())).sum()
-                _isbn_missing = len(_dist_orders) - _isbn_found
-                if _isbn_missing > 0:
-                    st.caption(f"ℹ️ ISBN 없음: {_isbn_missing}/{len(_dist_orders)}건 (삭제된 상품 또는 세트물은 정상)")
+            _store_name = st.text_input(
+                "가게명 (발주서 첫 줄에 표시)",
+                value=st.session_state.get("order_store_name", "잉글리쉬존"),
+                key=f"{key_prefix}_store_name",
+                help="예: 잉글리쉬존, 북마트"
+            )
+            st.session_state["order_store_name"] = _store_name
 
-                _store_name = st.text_input(
-                    "가게명 (발주서 첫 줄에 표시)",
-                    value=st.session_state.get("order_store_name", "잉글리쉬존"),
-                    key=f"{key_prefix}_store_name",
-                    help="예: 잉글리쉬존, 북마트"
-                )
-                st.session_state["order_store_name"] = _store_name
+            _dist_summary = _dist_orders.groupby("거래처").agg(
+                건수=("도서명", "count"), 수량합계=("수량", "sum"), 금액합계=("결제금액", "sum"),
+            ).reset_index().sort_values("건수", ascending=False)
+            _dist_summary["금액합계"] = _dist_summary["금액합계"].apply(lambda x: f"{int(x):,}")
+            st.dataframe(_dist_summary, hide_index=True, use_container_width=True)
 
-                _dist_summary = _dist_orders.groupby("거래처").agg(
-                    건수=("도서명", "count"), 수량합계=("수량", "sum"), 금액합계=("결제금액", "sum"),
-                ).reset_index().sort_values("건수", ascending=False)
-                _dist_summary["금액합계"] = _dist_summary["금액합계"].apply(lambda x: f"{int(x):,}")
-                st.dataframe(_dist_summary, hide_index=True, use_container_width=True)
+            _dist_orders["_group_key"] = _dist_orders.apply(
+                lambda r: r["ISBN"] if r.get("ISBN") else r["도서명"], axis=1
+            )
+            _agg = _dist_orders.groupby(["거래처", "출판사", "_group_key"]).agg(
+                도서명=("도서명", "first"), ISBN=("ISBN", "first"), 주문수량=("수량", "sum"),
+            ).reset_index().drop(columns=["_group_key"])
+            _agg = _agg.sort_values(["거래처", "출판사", "도서명"])
 
-                _dist_orders["_group_key"] = _dist_orders.apply(
-                    lambda r: r["ISBN"] if r.get("ISBN") else r["도서명"], axis=1
-                )
-                _agg = _dist_orders.groupby(["거래처", "출판사", "_group_key"]).agg(
-                    도서명=("도서명", "first"), ISBN=("ISBN", "first"), 주문수량=("수량", "sum"),
-                ).reset_index().drop(columns=["_group_key"])
-                _agg = _agg.sort_values(["거래처", "출판사", "도서명"])
+            _xl_buf = _build_purchase_order_excel(_agg, _store_name)
 
-                _xl_buf = _build_purchase_order_excel(_agg, _store_name)
+            _ord_date_to_str = date.today().isoformat()
+            if "주문일" in _dist_orders.columns:
+                _dist_dates = _dist_orders["주문일"].dropna()
+                if not _dist_dates.empty:
+                    _ord_date_to_str = str(_dist_dates.max())
+            _file_date = _ord_date_to_str.replace("-", "")[2:]
 
-                _ord_date_to_str = date.today().isoformat()
-                if "주문일" in _dist_orders.columns:
-                    _dist_dates = _dist_orders["주문일"].dropna()
-                    if not _dist_dates.empty:
-                        _ord_date_to_str = str(_dist_dates.max())
-                _file_date = _ord_date_to_str.replace("-", "")[2:]
+            if st.download_button(
+                "📥 발주서 Excel 다운로드",
+                _xl_buf.getvalue(),
+                file_name=f"쿠팡{_file_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{key_prefix}_dist_xlsx_dl",
+                type="primary",
+                use_container_width=True,
+            ):
+                st.session_state["_step_purchase_order"] = True
 
-                if st.download_button(
-                    "📥 발주서 Excel 다운로드",
-                    _xl_buf.getvalue(),
-                    file_name=f"쿠팡{_file_date}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"{key_prefix}_dist_xlsx_dl",
-                    type="primary",
-                    use_container_width=True,
-                ):
-                    # 발주서 다운로드 시 독립적으로 DB 저장
-                    try:
-                        _po_batch = _save_purchase_order_to_db(_dist_orders)
-                        st.success(f"발주 이력 저장 ({len(_dist_orders)}건)")
-                    except Exception as e:
-                        logger.warning(f"발주 스냅샷 저장 실패: {e}")
+            _dist_names_sorted = _dist_summary["거래처"].tolist()
+            _dist_filter = st.multiselect(
+                "거래처 필터", _dist_names_sorted,
+                default=_dist_names_sorted, key=f"{key_prefix}_dist_filter",
+            )
+            _filtered_agg = _agg[_agg["거래처"].isin(_dist_filter)] if _dist_filter else _agg
+            _show_agg = _filtered_agg[["거래처", "ISBN", "출판사", "도서명", "주문수량"]].copy()
 
-                _dist_names_sorted = _dist_summary["거래처"].tolist()
-                _dist_filter = st.multiselect(
-                    "거래처 필터", _dist_names_sorted,
-                    default=_dist_names_sorted, key=f"{key_prefix}_dist_filter",
-                )
-                _filtered_agg = _agg[_agg["거래처"].isin(_dist_filter)] if _dist_filter else _agg
-                _show_agg = _filtered_agg[["거래처", "ISBN", "출판사", "도서명", "주문수량"]].copy()
+            gb2 = GridOptionsBuilder.from_dataframe(_show_agg)
+            gb2.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20)
+            gb2.configure_default_column(resizable=True, sorteable=True, filterable=True)
+            gb2.configure_column("도서명", width=350)
+            gb2.configure_column("주문수량", width=80)
+            AgGrid(_show_agg, gridOptions=gb2.build(), height=500, theme="streamlit", key=f"{key_prefix}_dist_grid")
 
-                gb2 = GridOptionsBuilder.from_dataframe(_show_agg)
-                gb2.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20)
-                gb2.configure_default_column(resizable=True, sorteable=True, filterable=True)
-                gb2.configure_column("도서명", width=350)
-                gb2.configure_column("주문수량", width=80)
-                AgGrid(_show_agg, gridOptions=gb2.build(), height=500, theme="streamlit", key=f"{key_prefix}_dist_grid")
-
-        # ── 탭2: 발주 이력 (DB 저장분) ──
-        with _po_tab2:
-            _render_purchase_order_history(instruct_all, key_prefix)
-
-
-def _render_purchase_order_history(current_orders, key_prefix="t2"):
-    """발주 이력 조회 — 저장된 batch에서 발주서 엑셀 재생성"""
-    from dashboard.utils import engine as _eng
-    from sqlalchemy import text as _text
-
-    # 최근 batch 목록 조회 (최근 10건)
-    try:
-        with _eng.connect() as _conn:
-            _batches_df = pd.read_sql(_text("""
-                SELECT batch_id,
-                       MIN(ordered_at) AS ordered_at,
-                       COUNT(*) AS item_count,
-                       SUM(quantity) AS total_qty
-                FROM purchase_order_logs
-                GROUP BY batch_id
-                ORDER BY MIN(ordered_at) DESC
-                LIMIT 10
-            """), _conn)
-    except Exception as e:
-        logger.warning(f"발주 이력 조회 실패: {e}")
-        st.caption("발주 이력 테이블이 없습니다. 마이그레이션을 실행하세요.")
-        return
-
-    if _batches_df.empty:
-        st.info("발주 이력이 없습니다. 배송리스트를 다운로드하면 자동 저장됩니다.")
-        return
-
-    # batch 선택
-    _batches_df["ordered_at"] = pd.to_datetime(_batches_df["ordered_at"])
-    _batches_df["표시"] = _batches_df.apply(
-        lambda r: f"{r['ordered_at'].strftime('%m/%d %H:%M')} — {int(r['item_count'])}건 ({int(r['total_qty'])}권)",
-        axis=1,
-    )
-
-    _selected_label = st.selectbox(
-        "발주 이력 선택",
-        _batches_df["표시"].tolist(),
-        key=f"{key_prefix}_po_history_select",
-    )
-    _sel_idx = _batches_df["표시"].tolist().index(_selected_label)
-    _sel_batch_id = _batches_df.iloc[_sel_idx]["batch_id"]
-
-    # 선택한 batch 상세 조회
-    try:
-        with _eng.connect() as _conn:
-            _detail_df = pd.read_sql(_text("""
-                SELECT distributor AS "거래처", publisher AS "출판사",
-                       book_title AS "도서명", isbn AS "ISBN",
-                       quantity AS "주문수량", shipment_box_id AS "묶음배송번호"
-                FROM purchase_order_logs
-                WHERE batch_id = :bid
-                ORDER BY distributor, publisher, book_title
-            """), _conn, params={"bid": _sel_batch_id})
-    except Exception:
-        return
-
-    if _detail_df.empty:
-        return
-
-    # 거래처별 요약
-    _po_summary = _detail_df.groupby("거래처").agg(
-        건수=("도서명", "count"), 수량합계=("주문수량", "sum"),
-    ).reset_index().sort_values("건수", ascending=False)
-    st.dataframe(_po_summary, hide_index=True, use_container_width=True)
-
-    # 이력에서 발주서 엑셀 재생성
-    _store_name = st.session_state.get("order_store_name", "잉글리쉬존")
-    _agg_hist = _detail_df.groupby(["거래처", "출판사"]).agg(
-        도서명=("도서명", "first"), ISBN=("ISBN", "first"), 주문수량=("주문수량", "sum"),
-    ).reset_index()
-    # ISBN/도서명 기준 그룹핑 (같은 책 수량 합산)
-    _detail_df["_group_key"] = _detail_df.apply(
-        lambda r: r["ISBN"] if r.get("ISBN") and str(r["ISBN"]).strip() else r["도서명"], axis=1
-    )
-    _agg_hist = _detail_df.groupby(["거래처", "출판사", "_group_key"]).agg(
-        도서명=("도서명", "first"), ISBN=("ISBN", "first"), 주문수량=("주문수량", "sum"),
-    ).reset_index().drop(columns=["_group_key"])
-    _agg_hist = _agg_hist.sort_values(["거래처", "출판사", "도서명"])
-
-    _xl_hist = _build_purchase_order_excel(_agg_hist, _store_name)
-    _batch_date = _batches_df.iloc[_sel_idx]["ordered_at"]
-    _file_date = _batch_date.strftime("%y%m%d")
-
-    st.download_button(
-        "📥 이 발주 이력으로 발주서 다운로드",
-        _xl_hist.getvalue(),
-        file_name=f"쿠팡{_file_date}_발주.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"{key_prefix}_po_hist_dl",
-        type="primary",
-        use_container_width=True,
-    )
-
-    # 현재 INSTRUCT와 비교
-    if not current_orders.empty:
-        _current_boxes = set(current_orders["묶음배송번호"].astype(int).unique())
-        _batch_boxes = set(_detail_df["묶음배송번호"].astype(int).unique())
-
-        _added = _current_boxes - _batch_boxes
-        _removed = _batch_boxes - _current_boxes
-
-        st.markdown("**현재 상품준비중과 비교:**")
-        _c1, _c2 = st.columns(2)
-        with _c1:
-            if _added:
-                st.warning(f"발주 후 추가된 주문: {len(_added)}건")
-                _added_df = current_orders[current_orders["묶음배송번호"].astype(int).isin(_added)]
-                _show_cols = [c for c in ["묶음배송번호", "상품명", "수량"] if c in _added_df.columns]
-                if _show_cols:
-                    st.dataframe(_added_df[_show_cols].head(20), hide_index=True, use_container_width=True)
-            else:
-                st.success("추가된 주문 없음")
-        with _c2:
-            if _removed:
-                st.info(f"발주 후 처리된 주문: {len(_removed)}건 (배송지시 등)")
-            else:
-                st.success("빠진 주문 없음")
-
-    # 상세 목록
-    with st.expander("상세 내역", expanded=False):
-        st.dataframe(
-            _detail_df[["거래처", "출판사", "도서명", "ISBN", "주문수량"]],
-            hide_index=True, use_container_width=True,
-        )
 
 
 def _render_geukdong_excel(instruct_all, accounts_df, key_prefix="t2"):
@@ -1253,7 +1156,7 @@ def _render_geukdong_excel(instruct_all, accounts_df, key_prefix="t2"):
             _gk_result.to_excel(writer, sheet_name="극동", index=False)
         _gk_buf.seek(0)
 
-        st.download_button(
+        if st.download_button(
             f"극동 엑셀 다운로드 ({len(_gk_agg)}종 / {int(_gk_agg['수량'].sum())}권)",
             _gk_buf.getvalue(),
             file_name=f"극동_{date.today().strftime('%m%d')}.xlsx",
@@ -1261,10 +1164,11 @@ def _render_geukdong_excel(instruct_all, accounts_df, key_prefix="t2"):
             key=f"{key_prefix}_gk_xlsx_dl",
             type="primary",
             use_container_width=True,
-        )
+        ):
+            st.session_state["_step_geukdong"] = True
 
 
-def _render_delivery_list(instruct_all):
+def _render_delivery_list(instruct_all, accounts_df=None):
     """2-4. 배송리스트 다운로드 (책별 정렬, 세션 저장)"""
     with st.expander("📦 배송리스트 다운로드", expanded=False):
         if instruct_all.empty:
@@ -1275,6 +1179,40 @@ def _render_delivery_list(instruct_all):
             _dl_orders = instruct_all.copy()
             _acct_counts = _dl_orders.groupby("계정").size().reset_index(name="건수")
             st.dataframe(_acct_counts, hide_index=True)
+
+            # ── 출고중지 사전 확인 ──
+            if accounts_df is not None:
+                if st.button("출고중지 사전 확인", key="t2_pre_ru_check",
+                             help="배송리스트 다운로드 전 출고중지(RU) 요청이 있는지 미리 확인"):
+                    _ru_hits = []
+                    _dl_oids = set(int(x) for x in _dl_orders["주문번호"].unique() if pd.notna(x) and int(x) > 0)
+                    _t2_from = (date.today() - timedelta(days=14)).isoformat()
+                    _t2_to = date.today().isoformat()
+                    for _aid in _dl_orders["_account_id"].unique():
+                        _acct_row = accounts_df[accounts_df["id"] == int(_aid)]
+                        if _acct_row.empty:
+                            continue
+                        _acct_row = _acct_row.iloc[0]
+                        _client = create_wing_client(_acct_row)
+                        if not _client:
+                            continue
+                        try:
+                            _reqs = _client.get_all_return_requests(_t2_from, _t2_to, status="RU")
+                            for _req in _reqs:
+                                _oid = _req.get("orderId")
+                                if _oid and int(_oid) in _dl_oids:
+                                    _ru_hits.append({
+                                        "계정": _acct_row["account_name"],
+                                        "주문번호": _oid,
+                                        "사유": _req.get("cancelReason", ""),
+                                    })
+                        except Exception as e:
+                            st.warning(f"[{_acct_row['account_name']}] RU 조회 실패: {e}")
+                    if _ru_hits:
+                        st.warning(f"출고중지 요청 {len(_ru_hits)}건 — 해당 주문은 송장 등록 시 자동 제외됩니다.")
+                        st.dataframe(pd.DataFrame(_ru_hits), hide_index=True, use_container_width=True)
+                    else:
+                        st.success("출고중지 요청 없음 — 안전하게 배송리스트를 다운로드하세요.")
 
             # 공유 함수로 엑셀 생성
             _xl_bytes, _dl_df = build_delivery_excel_bytes(_dl_orders, sort_and_color=True)
@@ -1394,17 +1332,16 @@ def _render_delivery_list(instruct_all):
                         _conn.execute(_stmt)
                     _conn.commit()
                 st.session_state["_last_batch_id"] = _batch_id
+                st.session_state["_step_delivery_list"] = True
             except Exception as e:
                 logger.warning(f"배송리스트 다운로드 기록 실패: {e}")
 
-            # 발주 스냅샷 자동 저장 (다음날 아침 발주서용)
+            # 발주 스냅샷 자동 저장 (발주서 이력용)
             try:
                 _enriched = _enrich_purchase_order_data(_dl_orders)
                 _po_batch = _save_purchase_order_to_db(_enriched)
-                st.success(f"발주 이력 자동 저장 ({len(_enriched)}건) — 내일 아침 발주서 탭에서 확인")
             except Exception as e:
                 logger.warning(f"발주 스냅샷 저장 실패: {e}")
-                st.warning(f"⚠️ 발주 이력 저장 실패 — 내일 발주서 탭에 반영되지 않을 수 있습니다. ({e})")
 
         st.caption("Sheet1: 한진택배 업로드용 (책 순 정렬) | Sheet2: 픽킹리스트")
 
@@ -1421,6 +1358,10 @@ def _render_hanjin_nfocus():
 4. 아래 '쿠팡 송장 등록'에서 해당 엑셀 업로드 → 자동 매칭 → 쿠팡 등록
         """)
         st.link_button("한진 N-Focus 열기", "https://focus.hanjin.com/release/listup", type="primary", use_container_width=True)
+        if st.checkbox("한진 업로드 완료", value=st.session_state.get("_step_hanjin", False), key="t2_hanjin_done"):
+            st.session_state["_step_hanjin"] = True
+        else:
+            st.session_state.pop("_step_hanjin", None)
 
 
 def _render_invoice_upload(instruct_all, accounts_df):
@@ -1611,7 +1552,11 @@ def _render_invoice_upload(instruct_all, accounts_df):
                     logger.warning(f"배송리스트 로그 등록마킹 실패: {e}")
 
             if _total_success > 0:
-                st.success(f"송장 등록 완료: 총 {_total_success}건 성공" + (f", {_total_fail}건 실패" if _total_fail else ""))
+                st.session_state["_step_invoice"] = True
+                _msg = f"송장 등록 완료: 총 {_total_success}건 성공"
+                if _total_fail:
+                    _msg += f", {_total_fail}건 실패"
+                st.session_state["_flash_messages"] = [("success", _msg)]
                 clear_order_caches()
                 st.session_state.pop("_delivery_list_df", None)
                 st.rerun()
