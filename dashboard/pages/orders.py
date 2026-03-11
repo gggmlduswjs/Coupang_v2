@@ -453,14 +453,13 @@ def render(selected_account, accounts_df, account_names):
 
         # ── 반품/교환 요청 확인 ──
         with st.expander("반품/교환 요청 확인", expanded=False):
-            if st.button("반품/교환 요청 조회 (최근 30일)", key="t3_btn_returns"):
+            if st.button("반품/교환 요청 조회 (오늘)", key="t3_btn_returns"):
                 _return_results = []
-                _t3_from = (date.today() - timedelta(days=30)).isoformat()
+                _t3_from = date.today().isoformat()
                 _t3_to = date.today().isoformat()
                 _checked_aids = set()
-                _aid_list = _t3_data["_account_id"].unique().tolist() if not _t3_data.empty else []
-                if not _aid_list:
-                    _aid_list = accounts_df["id"].tolist()
+                _aid_list = accounts_df["id"].tolist()
+                _clients_cache = {}
                 for _aid in _aid_list:
                     if int(_aid) in _checked_aids:
                         continue
@@ -472,24 +471,86 @@ def render(selected_account, accounts_df, account_names):
                     _client = create_wing_client(_acct_row)
                     if not _client:
                         continue
+                    _clients_cache[int(_aid)] = _client
                     try:
-                        for _rs_code, _rs_label in [("UC", "반품접수"), ("CC", "수거완료"), ("RU", "출고중지")]:
+                        for _rs_code, _rs_label in [("RU", "출고중지"), ("UC", "반품접수"), ("CC", "수거완료")]:
                             _reqs = _client.get_all_return_requests(_t3_from, _t3_to, status=_rs_code)
                             for _req in _reqs:
                                 _return_results.append({
+                                    "_account_id": int(_aid),
+                                    "_receipt_id": _req.get("receiptId"),
+                                    "_cancel_count": _req.get("cancelCountSum", 1),
                                     "계정": _acct_row["account_name"],
                                     "유형": _rs_label,
                                     "주문번호": _req.get("orderId"),
+                                    "상품명": ((_req.get("returnItems") or [{}])[0].get("vendorItemName", ""))[:40] if _req.get("returnItems") else "",
                                     "사유": _req.get("cancelReason", ""),
-                                    "접수일": str(_req.get("createdAt", ""))[:10],
+                                    "접수일시": str(_req.get("createdAt", ""))[:16].replace("T", " "),
                                 })
                     except Exception as e:
                         st.warning(f"[{_acct_row['account_name']}] 조회 실패: {e}")
-                if _return_results:
-                    st.warning(f"반품/교환/출고중지 요청 {len(_return_results)}건")
-                    st.dataframe(pd.DataFrame(_return_results), hide_index=True, use_container_width=True)
+
+                st.session_state["_t3_return_results"] = _return_results
+                st.session_state["_t3_return_clients"] = _clients_cache
+
+            # 결과 표시 (세션에서 읽어서 rerun 후에도 유지)
+            _return_results = st.session_state.get("_t3_return_results")
+            _clients_cache = st.session_state.get("_t3_return_clients", {})
+            if _return_results is not None:
+                if not _return_results:
+                    st.success("오늘 반품/교환/출고중지 요청이 없습니다.")
                 else:
-                    st.success("최근 30일간 반품/교환/출고중지 요청이 없습니다.")
+                    _ru_items = [r for r in _return_results if r["유형"] == "출고중지"]
+                    _other_items = [r for r in _return_results if r["유형"] != "출고중지"]
+
+                    # 출고중지(RU) — 액션 가능
+                    if _ru_items:
+                        st.warning(f"출고중지 요청 {len(_ru_items)}건 — 미출고 시 '출고중지완료' 처리 필요")
+                        _ru_df = pd.DataFrame(_ru_items)
+                        st.dataframe(
+                            _ru_df[["계정", "주문번호", "상품명", "사유", "접수일시"]],
+                            hide_index=True, use_container_width=True,
+                        )
+                        # 출고중지완료 처리 버튼
+                        _ru_confirm = st.checkbox(
+                            f"출고중지 {len(_ru_items)}건을 '출고중지완료' 처리 (해당 주문 미출고 확인)",
+                            key="t3_ru_confirm",
+                        )
+                        if _ru_confirm:
+                            if st.button(f"출고중지완료 처리 ({len(_ru_items)}건)", key="t3_btn_ru_complete", type="primary"):
+                                _ru_ok = 0
+                                _ru_fail = 0
+                                for _ri in _ru_items:
+                                    _aid = _ri["_account_id"]
+                                    _rid = _ri["_receipt_id"]
+                                    _cnt = _ri["_cancel_count"]
+                                    _cl = _clients_cache.get(_aid)
+                                    if not _cl or not _rid:
+                                        _ru_fail += 1
+                                        continue
+                                    try:
+                                        _cl.stop_shipment(receipt_id=int(_rid), cancel_count=int(_cnt))
+                                        _ru_ok += 1
+                                    except Exception as e:
+                                        st.error(f"[{_ri['계정']}] 주문 {_ri['주문번호']}: {e}")
+                                        _ru_fail += 1
+                                if _ru_ok > 0:
+                                    st.toast(f"출고중지완료 {_ru_ok}건 처리", icon="✅")
+                                    st.session_state.pop("_t3_return_results", None)
+                                    st.session_state.pop("_t3_return_clients", None)
+                                    clear_order_caches()
+                                    st.rerun()
+                                if _ru_fail > 0:
+                                    st.error(f"실패 {_ru_fail}건")
+
+                    # 반품접수/수거완료 — 조회만
+                    if _other_items:
+                        st.info(f"반품접수/수거완료 {len(_other_items)}건 (조회 전용)")
+                        _ot_df = pd.DataFrame(_other_items)
+                        st.dataframe(
+                            _ot_df[["계정", "유형", "주문번호", "상품명", "사유", "접수일시"]],
+                            hide_index=True, use_container_width=True,
+                        )
 
     # ══════════════════════════════════════
     # 탭4: 📊 운영현황 (오늘 현황 / 이력 검색)
