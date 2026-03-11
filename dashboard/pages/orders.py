@@ -421,11 +421,220 @@ def render(selected_account, accounts_df, account_names):
 
 
 def _render_order_stats():
-    """탭4: 배송 파이프라인 추적 — 주문→배송리스트→운송장→배송지시"""
-    st.caption("주문 접수 → 배송리스트 → 운송장 발급 → 쿠팡 송장등록 파이프라인 추적")
+    """탭4: DB 기반 운영 현황 — 배송리스트·발주서·주문 이력 조회"""
+    st.caption("DB에 저장된 실제 데이터 기반 운영 현황")
 
-    # ── 전체 파이프라인 현황 (주문 기준, 최근 14일) ──
-    _pipe_df = query_df_cached("""
+    # ══════════════════════════════════════
+    # (A) 오늘의 운영 요약
+    # ══════════════════════════════════════
+    _kpi = query_df("""
+        SELECT
+            (SELECT COUNT(DISTINCT shipment_box_id) FROM orders
+             WHERE (ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
+               AND canceled = false) AS today_orders,
+            (SELECT COUNT(DISTINCT batch_id) FROM delivery_list_logs
+             WHERE (downloaded_at + INTERVAL '9 hours')::date = CURRENT_DATE) AS today_dl_batches,
+            (SELECT COUNT(*) FROM delivery_list_logs
+             WHERE (downloaded_at + INTERVAL '9 hours')::date = CURRENT_DATE) AS today_dl_rows,
+            (SELECT COUNT(*) FROM delivery_list_logs
+             WHERE registered = true
+               AND (downloaded_at + INTERVAL '9 hours')::date = CURRENT_DATE) AS today_registered,
+            (SELECT COUNT(*) FROM delivery_list_logs
+             WHERE registered = false) AS total_pending,
+            (SELECT COUNT(DISTINCT batch_id) FROM purchase_order_logs
+             WHERE (ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE) AS today_po_batches
+    """)
+    _k = _kpi.iloc[0] if not _kpi.empty else {}
+
+    _c1, _c2, _c3, _c4, _c5 = st.columns(5)
+    _c1.metric("오늘 주문 (box)", f"{int(_k.get('today_orders', 0)):,}건")
+    _c2.metric("배송리스트", f"{int(_k.get('today_dl_batches', 0))}회 / {int(_k.get('today_dl_rows', 0))}건")
+    _c3.metric("송장 등록 (오늘)", f"{int(_k.get('today_registered', 0)):,}건")
+    _c4.metric("미등록 (전체)", f"{int(_k.get('total_pending', 0)):,}건",
+               delta=f"{int(_k.get('total_pending', 0))}건" if int(_k.get("total_pending", 0)) > 0 else None,
+               delta_color="inverse")
+    _c5.metric("발주서 (오늘)", f"{int(_k.get('today_po_batches', 0))}회")
+
+    st.divider()
+
+    # ══════════════════════════════════════
+    # (B) 배송리스트 이력 (delivery_list_logs)
+    # ══════════════════════════════════════
+    st.subheader("배송리스트 이력")
+
+    _dl_batches = query_df("""
+        SELECT
+            d.batch_id,
+            (MIN(d.downloaded_at) + INTERVAL '9 hours')::timestamp AS 다운로드일시,
+            COUNT(*) AS 총건수,
+            SUM(CASE WHEN d.registered THEN 1 ELSE 0 END) AS 등록완료,
+            SUM(CASE WHEN NOT d.registered THEN 1 ELSE 0 END) AS 미등록
+        FROM delivery_list_logs d
+        WHERE d.batch_id IS NOT NULL
+        GROUP BY d.batch_id
+        ORDER BY MIN(d.downloaded_at) DESC
+        LIMIT 20
+    """)
+
+    if _dl_batches.empty:
+        st.info("배송리스트 다운로드 이력이 없습니다.")
+    else:
+        _dl_batches["다운로드일시"] = pd.to_datetime(_dl_batches["다운로드일시"]).dt.strftime("%m/%d %H:%M")
+        _dl_batches["상태"] = _dl_batches.apply(
+            lambda r: "전체 등록" if r["미등록"] == 0 else f"미등록 {int(r['미등록'])}건", axis=1
+        )
+        st.dataframe(
+            _dl_batches[["다운로드일시", "총건수", "등록완료", "미등록", "상태"]],
+            hide_index=True, use_container_width=True,
+            column_config={
+                "총건수": st.column_config.NumberColumn(format="%d건"),
+                "등록완료": st.column_config.NumberColumn(format="%d건"),
+                "미등록": st.column_config.NumberColumn(format="%d건"),
+            },
+        )
+
+        # 배치 상세 조회
+        _dl_options = []
+        for _, _b in _dl_batches.iterrows():
+            _dl_options.append(f"{_b['다운로드일시']} ({int(_b['총건수'])}건, {_b['상태']})")
+        _dl_sel = st.selectbox("배치 상세 조회", range(len(_dl_options)),
+                               format_func=lambda i: _dl_options[i], key="t4_dl_batch_sel")
+        _dl_sel_bid = _dl_batches.iloc[_dl_sel]["batch_id"]
+
+        _dl_detail = query_df("""
+            SELECT
+                d.seq_no AS 순번,
+                d.shipment_box_id AS 묶음배송번호,
+                d.order_id AS 주문번호,
+                d.receiver_name AS 수취인,
+                d.buyer_name AS 구매자,
+                a.account_name AS 계정,
+                d.registered AS 송장등록
+            FROM delivery_list_logs d
+            JOIN accounts a ON d.account_id = a.id
+            WHERE d.batch_id = :bid
+            ORDER BY d.seq_no
+        """, {"bid": _dl_sel_bid})
+
+        if not _dl_detail.empty:
+            _reg_cnt = int(_dl_detail["송장등록"].sum())
+            _unreg_cnt = len(_dl_detail) - _reg_cnt
+            st.caption(f"총 {len(_dl_detail)}건 — 등록 {_reg_cnt} / 미등록 {_unreg_cnt}")
+            st.dataframe(
+                _dl_detail,
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "묶음배송번호": st.column_config.NumberColumn(format="%d"),
+                    "주문번호": st.column_config.NumberColumn(format="%d"),
+                    "송장등록": st.column_config.CheckboxColumn("송장등록", disabled=True),
+                },
+            )
+
+    st.divider()
+
+    # ══════════════════════════════════════
+    # (C) 발주서 이력 (purchase_order_logs)
+    # ══════════════════════════════════════
+    st.subheader("발주서 이력")
+
+    _po_batches = query_df("""
+        SELECT
+            p.batch_id,
+            (MIN(p.ordered_at) + INTERVAL '9 hours')::timestamp AS 발주일시,
+            COUNT(*) AS 총건수,
+            SUM(p.quantity) AS 총수량,
+            STRING_AGG(DISTINCT COALESCE(p.distributor, '미지정'), ', ') AS 거래처
+        FROM purchase_order_logs p
+        WHERE p.batch_id IS NOT NULL
+        GROUP BY p.batch_id
+        ORDER BY MIN(p.ordered_at) DESC
+        LIMIT 20
+    """)
+
+    if _po_batches.empty:
+        st.info("발주서 이력이 없습니다.")
+    else:
+        _po_batches["발주일시"] = pd.to_datetime(_po_batches["발주일시"]).dt.strftime("%m/%d %H:%M")
+        st.dataframe(
+            _po_batches[["발주일시", "총건수", "총수량", "거래처"]],
+            hide_index=True, use_container_width=True,
+            column_config={
+                "총건수": st.column_config.NumberColumn(format="%d건"),
+                "총수량": st.column_config.NumberColumn(format="%d권"),
+            },
+        )
+
+        _po_options = []
+        for _, _b in _po_batches.iterrows():
+            _po_options.append(f"{_b['발주일시']} ({int(_b['총건수'])}건, {int(_b['총수량'])}권)")
+        _po_sel = st.selectbox("배치 상세 조회", range(len(_po_options)),
+                               format_func=lambda i: _po_options[i], key="t4_po_batch_sel")
+        _po_sel_bid = _po_batches.iloc[_po_sel]["batch_id"]
+
+        _po_detail = query_df("""
+            SELECT
+                p.book_title AS 도서명,
+                p.isbn,
+                p.publisher AS 출판사,
+                COALESCE(p.distributor, '') AS 거래처,
+                p.quantity AS 수량,
+                p.shipment_box_id AS 묶음배송번호,
+                a.account_name AS 계정
+            FROM purchase_order_logs p
+            JOIN accounts a ON p.account_id = a.id
+            WHERE p.batch_id = :bid
+            ORDER BY p.distributor NULLS LAST, p.book_title
+        """, {"bid": _po_sel_bid})
+
+        if not _po_detail.empty:
+            # 거래처별 요약
+            _dist_summary = _po_detail.groupby("거래처").agg(
+                건수=("도서명", "count"), 수량=("수량", "sum")
+            ).reset_index()
+            _dist_summary = _dist_summary[_dist_summary["거래처"] != ""]
+            if not _dist_summary.empty:
+                st.caption("거래처별: " + " / ".join(
+                    f"{r['거래처']} {int(r['수량'])}권" for _, r in _dist_summary.iterrows()
+                ))
+            st.dataframe(
+                _po_detail,
+                hide_index=True, use_container_width=True,
+                column_config={
+                    "묶음배송번호": st.column_config.NumberColumn(format="%d"),
+                    "도서명": st.column_config.TextColumn(width="large"),
+                },
+            )
+
+    st.divider()
+
+    # ══════════════════════════════════════
+    # (D) 주문 DB 조회 (orders 테이블)
+    # ══════════════════════════════════════
+    st.subheader("주문 DB 조회")
+
+    _fc1, _fc2, _fc3, _fc4 = st.columns([2, 2, 2, 1])
+    _today = date.today()
+    with _fc1:
+        _date_range = st.date_input("기간", value=[_today - timedelta(days=7), _today], key="t4_date_range")
+    with _fc2:
+        _status_options = list(STATUS_MAP.keys())
+        _status_sel = st.multiselect("상태", _status_options,
+                                     default=_status_options,
+                                     format_func=lambda x: STATUS_MAP.get(x, x),
+                                     key="t4_status_filter")
+    with _fc3:
+        _acct_list = query_df_cached("SELECT account_name FROM accounts ORDER BY id")
+        _acct_names = _acct_list["account_name"].tolist() if not _acct_list.empty else []
+        _acct_sel = st.multiselect("계정", _acct_names, default=_acct_names, key="t4_acct_filter")
+    with _fc4:
+        _inc_canceled = st.checkbox("취소 포함", value=False, key="t4_inc_canceled")
+
+    if len(_date_range) == 2:
+        _start, _end = _date_range
+    else:
+        _start = _end = _date_range[0] if _date_range else _today
+
+    _orders_df = query_df("""
         SELECT
             a.account_name AS 계정,
             o.shipment_box_id AS 묶음배송번호,
@@ -434,117 +643,53 @@ def _render_order_stats():
             o.vendor_item_name AS 상품명,
             o.shipping_count AS 수량,
             o.order_price AS 결제금액,
-            o.status,
-            o.invoice_number,
-            o.delivery_company_name,
-            o.canceled,
-            (o.ordered_at + INTERVAL '9 hours')::timestamp AS 주문일시,
-            CASE WHEN d.id IS NOT NULL THEN true ELSE false END AS 배송리스트,
-            d.registered AS 송장등록됨
+            o.status AS 상태코드,
+            o.invoice_number AS 운송장번호,
+            o.delivery_company_name AS 택배사,
+            o.canceled AS 취소,
+            (o.ordered_at + INTERVAL '9 hours')::timestamp AS 주문일시
         FROM orders o
         JOIN accounts a ON o.account_id = a.id
-        LEFT JOIN delivery_list_logs d ON o.shipment_box_id = d.shipment_box_id
-        WHERE o.ordered_at >= NOW() - INTERVAL '14 days'
-          AND o.canceled = false
+        WHERE o.ordered_at >= :start_date
+          AND o.ordered_at < :end_date::date + INTERVAL '1 day'
         ORDER BY o.ordered_at DESC
-    """)
+        LIMIT 500
+    """, {"start_date": str(_start), "end_date": str(_end)})
 
-    if _pipe_df.empty:
-        st.info("최근 14일 주문 데이터가 없습니다.")
-        return
-
-    # 파이프라인 단계 판정
-    def _get_step(row):
-        if row["status"] in ("DEPARTURE", "DELIVERING", "FINAL_DELIVERY"):
-            return "완료"
-        if row["invoice_number"] and str(row["invoice_number"]).strip():
-            return "완료"
-        if row["배송리스트"]:
-            if row.get("송장등록됨"):
-                return "완료"
-            return "운송장 대기"
-        if row["status"] == "INSTRUCT":
-            return "배송리스트 대기"
-        if row["status"] == "ACCEPT":
-            return "발주확인 대기"
-        return "기타"
-
-    _pipe_df["단계"] = _pipe_df.apply(_get_step, axis=1)
-
-    # ── (A) 상단 KPI: 파이프라인 단계별 건수 ──
-    _step_counts = _pipe_df["단계"].value_counts()
-    _total = len(_pipe_df)
-    _done = int(_step_counts.get("완료", 0))
-    _wait_invoice = int(_step_counts.get("운송장 대기", 0))
-    _wait_dl = int(_step_counts.get("배송리스트 대기", 0))
-    _wait_accept = int(_step_counts.get("발주확인 대기", 0))
-
-    _k1, _k2, _k3, _k4, _k5 = st.columns(5)
-    _k1.metric("전체 (14일)", f"{_total:,}건")
-    _k2.metric("완료", f"{_done:,}건")
-    _k3.metric("운송장 대기", f"{_wait_invoice:,}건",
-               delta=f"{_wait_invoice}건 미처리" if _wait_invoice else None,
-               delta_color="inverse")
-    _k4.metric("배송리스트 대기", f"{_wait_dl:,}건",
-               delta=f"{_wait_dl}건 미처리" if _wait_dl else None,
-               delta_color="inverse")
-    _k5.metric("발주확인 대기", f"{_wait_accept:,}건",
-               delta=f"{_wait_accept}건 미처리" if _wait_accept else None,
-               delta_color="inverse")
-
-    st.divider()
-
-    # ── (B) 문제 건 (완료 아닌 것) 먼저 표시 ──
-    _problem = _pipe_df[_pipe_df["단계"] != "완료"].copy()
-    if _problem.empty:
-        st.success("모든 주문이 정상 처리되었습니다. 미처리 건이 없습니다.")
+    if _orders_df.empty:
+        st.info("해당 기간에 주문 데이터가 없습니다.")
     else:
-        st.subheader(f"미처리 주문 ({len(_problem)}건)")
-        st.caption("발주확인/배송리스트/운송장 단계에서 아직 완료되지 않은 건")
-        _problem["주문일시"] = pd.to_datetime(_problem["주문일시"]).dt.strftime("%m/%d %H:%M")
-        _problem["상태"] = _problem["status"].map(STATUS_MAP).fillna(_problem["status"])
-        _prob_display = _problem[["주문일시", "계정", "수취인", "상품명", "수량", "상태", "단계"]].copy()
-        # 단계별 색 구분을 위한 정렬
-        _step_order = {"발주확인 대기": 0, "배송리스트 대기": 1, "운송장 대기": 2, "기타": 3}
-        _prob_display["_sort"] = _prob_display["단계"].map(_step_order).fillna(9)
-        _prob_display = _prob_display.sort_values("_sort").drop(columns=["_sort"])
-        st.dataframe(
-            _prob_display,
-            hide_index=True, use_container_width=True,
-            column_config={"상품명": st.column_config.TextColumn(width="large")},
-        )
+        # 필터 적용 (Python)
+        if _status_sel:
+            _orders_df = _orders_df[_orders_df["상태코드"].isin(_status_sel)]
+        if _acct_sel:
+            _orders_df = _orders_df[_orders_df["계정"].isin(_acct_sel)]
+        if not _inc_canceled:
+            _orders_df = _orders_df[~_orders_df["취소"]]
 
-    st.divider()
+        if _orders_df.empty:
+            st.info("필터 조건에 맞는 데이터가 없습니다.")
+        else:
+            # 상태별 요약
+            _orders_df["상태"] = _orders_df["상태코드"].map(STATUS_MAP).fillna(_orders_df["상태코드"])
+            _status_pivot = _orders_df.groupby(["계정", "상태"]).size().unstack(fill_value=0).reset_index()
+            st.dataframe(_status_pivot, hide_index=True, use_container_width=True)
 
-    # ── (C) 계정별 파이프라인 요약 ──
-    st.subheader("계정별 파이프라인 요약")
-    _acct_summary = (
-        _pipe_df.groupby(["계정", "단계"])
-        .size()
-        .unstack(fill_value=0)
-        .reset_index()
-    )
-    # 컬럼 순서 정리
-    _desired_cols = ["계정", "발주확인 대기", "배송리스트 대기", "운송장 대기", "완료"]
-    _acct_summary = _acct_summary.reindex(
-        columns=[c for c in _desired_cols if c in _acct_summary.columns],
-        fill_value=0,
-    )
-    st.dataframe(_acct_summary, hide_index=True, use_container_width=True)
-
-    st.divider()
-
-    # ── (D) 최근 완료 건 (정상 처리 확인용) ──
-    with st.expander(f"최근 완료 건 확인 ({_done:,}건 중 최근 50건)", expanded=False):
-        _completed = _pipe_df[_pipe_df["단계"] == "완료"].head(50).copy()
-        if not _completed.empty:
-            _completed["주문일시"] = pd.to_datetime(_completed["주문일시"]).dt.strftime("%m/%d %H:%M")
-            _completed["상태"] = _completed["status"].map(STATUS_MAP).fillna(_completed["status"])
-            _completed["운송장"] = _completed["delivery_company_name"].fillna("") + " " + _completed["invoice_number"].fillna("")
+            # 주문 테이블
+            _orders_df["주문일시"] = pd.to_datetime(_orders_df["주문일시"]).dt.strftime("%m/%d %H:%M")
+            _display_cols = ["주문일시", "계정", "묶음배송번호", "주문번호", "수취인", "상품명", "수량", "결제금액", "상태", "운송장번호"]
+            if _inc_canceled:
+                _display_cols.append("취소")
+            st.caption(f"조회 결과: {len(_orders_df)}건" + (" (최대 500건)" if len(_orders_df) == 500 else ""))
             st.dataframe(
-                _completed[["주문일시", "계정", "수취인", "상품명", "운송장", "상태"]],
+                _orders_df[_display_cols],
                 hide_index=True, use_container_width=True,
-                column_config={"상품명": st.column_config.TextColumn(width="large")},
+                column_config={
+                    "묶음배송번호": st.column_config.NumberColumn(format="%d"),
+                    "주문번호": st.column_config.NumberColumn(format="%d"),
+                    "결제금액": st.column_config.NumberColumn(format="%d원"),
+                    "상품명": st.column_config.TextColumn(width="large"),
+                },
             )
 
 
