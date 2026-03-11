@@ -262,6 +262,36 @@ def sync_live_orders(accounts_df):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+def _build_receiver_suffix_map(orders_df):
+    """동일 수취인+주소가 서로 다른 묶음배송번호에 있으면 구분자 부여.
+
+    한진이 같은 이름+주소를 합배송하는 것을 방지하기 위해
+    두 번째 건부터 이름 뒤에 ' (2)', ' (3)' 등을 붙인다.
+
+    Returns:
+        dict: {묶음배송번호: 구분자 문자열} (첫 번째 건은 ""로 변경 없음)
+    """
+    key_to_boxes = {}  # (수취인, 주소) → [묶음배송번호, ...]
+    for _, row in orders_df.iterrows():
+        name = str(row.get("수취인", "")).strip()
+        addr = str(row.get("수취인주소", "")).strip()
+        box_id = int(row["묶음배송번호"])
+        key = (name, addr)
+        if key not in key_to_boxes:
+            key_to_boxes[key] = []
+        if box_id not in key_to_boxes[key]:
+            key_to_boxes[key].append(box_id)
+
+    suffix_map = {}  # 묶음배송번호 → 구분자
+    for (name, addr), box_ids in key_to_boxes.items():
+        if len(box_ids) <= 1:
+            continue
+        # 모든 건에 구분자 부여 — 첫 번째도 (1)로 표시하여 한진 합포장 방지
+        for i, box_id in enumerate(box_ids):
+            suffix_map[box_id] = f" ({i + 1})"
+    return suffix_map
+
+
 def build_delivery_rows(orders_df):
     """주문 DataFrame → 쿠팡 DeliveryList 40컬럼 행 목록 변환.
 
@@ -269,11 +299,17 @@ def build_delivery_rows(orders_df):
         list[dict]: 각 행이 DeliveryList 한 줄에 해당하는 딕셔너리 목록.
         _account_id, _vendor_item_id 내부 컬럼 포함.
     """
+    suffix_map = _build_receiver_suffix_map(orders_df)
+
     rows = []
     for idx, (_i, row) in enumerate(orders_df.iterrows(), 1):
+        box_id = int(row["묶음배송번호"])
+        receiver_name = str(row.get("수취인", ""))
+        suffix = suffix_map.get(box_id, "")
+
         rows.append({
             "번호": idx,
-            "묶음배송번호": int(row["묶음배송번호"]),
+            "묶음배송번호": box_id,
             "주문번호": int(row["주문번호"]),
             "택배사": "한진택배",
             "운송장번호": "",
@@ -298,7 +334,7 @@ def build_delivery_rows(orders_df):
             "옵션판매가(판매단가)": int(row.get("판매단가", 0) or row.get("결제금액", 0)),
             "구매자": row.get("구매자", ""),
             "구매자전화번호": row.get("구매자전화번호", ""),
-            "수취인이름": row.get("수취인", ""),
+            "수취인이름": receiver_name + suffix,
             "수취인전화번호": row.get("수취인전화번호", ""),
             "우편번호": row.get("우편번호", ""),
             "수취인 주소": row.get("수취인주소", ""),
@@ -309,7 +345,7 @@ def build_delivery_rows(orders_df):
             "구매확정일자": "",
             "개인통관번호(PCCC)": row.get("개인통관번호", ""),
             "통관용수취인전화번호": row.get("통관용전화번호", ""),
-            "기타": f"BOX:{int(row['묶음배송번호'])}",
+            "기타": f"BOX:{box_id}",
             "결제위치": row.get("결제위치", ""),
             "배송유형": "판매자 배송",
             "_account_id": int(row.get("_account_id", 0)),
