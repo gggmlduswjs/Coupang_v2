@@ -647,11 +647,11 @@ def _render_order_stats():
             o.invoice_number AS 운송장번호,
             o.delivery_company_name AS 택배사,
             o.canceled AS 취소,
-            (o.ordered_at + INTERVAL '9 hours')::timestamp AS 주문일시
+            CAST(o.ordered_at + INTERVAL '9 hours' AS timestamp) AS 주문일시
         FROM orders o
         JOIN accounts a ON o.account_id = a.id
         WHERE o.ordered_at >= :start_date
-          AND o.ordered_at < :end_date::date + INTERVAL '1 day'
+          AND o.ordered_at < CAST(:end_date AS date) + INTERVAL '1 day'
         ORDER BY o.ordered_at DESC
         LIMIT 500
     """, {"start_date": str(_start), "end_date": str(_end)})
