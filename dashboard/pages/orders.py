@@ -388,15 +388,6 @@ def render(selected_account, accounts_df, account_names):
                 # ── ① 다운로드 단계 ──
                 _render_delivery_list(_t2_filtered, accounts_df)
 
-                # 추가 자료 (시각적 위계 낮춤)
-                st.markdown("---")
-                st.caption("추가 자료")
-                _extra_c1, _extra_c2 = st.columns(2)
-                with _extra_c1:
-                    _render_purchase_order(_t2_filtered, accounts_df, key_prefix="t2")
-                with _extra_c2:
-                    _render_geukdong_excel(_t2_filtered, accounts_df, key_prefix="t2")
-
             elif _current_step == 1:
                 # ── ② 한진 단계 ──
                 _render_hanjin_nfocus()
@@ -547,7 +538,7 @@ def _render_today_dashboard():
 
     _c1, _c2, _c3, _c4, _c5 = st.columns(5)
     _c1.metric("오늘 주문", f"{int(_k.get('today_orders', 0)):,}건")
-    _c2.metric("배송리스트", f"{int(_k.get('today_dl_batches', 0))}회 / {int(_k.get('today_dl_rows', 0))}건")
+    _c2.metric("배송리스트", f"다운로드 {int(_k.get('today_dl_batches', 0))}회 ({int(_k.get('today_dl_rows', 0))}box)")
     _c3.metric("송장 등록", f"{int(_k.get('today_registered', 0)):,}건")
     _c4.metric("미등록 (전체)", f"{int(_k.get('total_pending', 0)):,}건",
                delta=f"{int(_k.get('total_pending', 0))}건" if int(_k.get("total_pending", 0)) > 0 else None,
@@ -622,11 +613,16 @@ def _render_today_dashboard():
     st.divider()
     st.subheader("당일 합산 발주서")
 
-    _po_today = query_df("""
-        SELECT book_title, isbn, publisher, distributor, quantity
-        FROM purchase_order_logs
-        WHERE CAST(ordered_at + INTERVAL '9 hours' AS date) = CURRENT_DATE
+    _po_today_raw = query_df("""
+        SELECT p.book_title, p.isbn, p.publisher, p.distributor, p.quantity,
+               b.list_price, COALESCE(b.author, '') AS author,
+               b.year AS pub_year, pub.supply_rate
+        FROM purchase_order_logs p
+        LEFT JOIN books b ON p.isbn = b.isbn AND p.isbn IS NOT NULL AND p.isbn != ''
+        LEFT JOIN publishers pub ON b.publisher_id = pub.id
+        WHERE CAST(p.ordered_at + INTERVAL '9 hours' AS date) = CURRENT_DATE
     """)
+    _po_today = _po_today_raw.copy()
 
     if _po_today.empty:
         st.info("오늘 처리된 발주 내역이 없습니다.")
@@ -677,6 +673,70 @@ def _render_today_dashboard():
         )
 
         st.caption(f"오늘 {int(_k.get('today_po_batches', 0))}개 배치의 발주 데이터를 합산했습니다.")
+
+    # ── 당일 극동 출고 엑셀 ──
+    st.divider()
+    st.subheader("당일 극동 출고 엑셀")
+
+    if _po_today_raw.empty:
+        st.info("오늘 처리된 발주 내역이 없습니다.")
+    else:
+        _gk_po = _po_today_raw.copy()
+        _gk_po = _gk_po.rename(columns={
+            "book_title": "도서명", "isbn": "상품바코드",
+            "publisher": "출판사", "quantity": "수량",
+            "list_price": "정가", "author": "저자",
+            "pub_year": "출판년도", "supply_rate": "공급률",
+        })
+        _gk_po["상품바코드"] = _gk_po["상품바코드"].fillna("").astype(str)
+        _gk_po["도서명"] = _gk_po["도서명"].fillna("").astype(str)
+
+        _gk_key = _gk_po.apply(lambda r: r["상품바코드"] if r["상품바코드"] else r["도서명"], axis=1)
+        _gk_po["_key"] = _gk_key
+        _gk_agg = _gk_po.groupby("_key").agg(
+            상품바코드=("상품바코드", "first"),
+            상품명=("도서명", "first"),
+            정가=("정가", "first"),
+            수량=("수량", "sum"),
+            공급률=("공급률", "first"),
+            출판사=("출판사", "first"),
+            저자=("저자", "first"),
+            출판년도=("출판년도", "first"),
+        ).reset_index(drop=True)
+
+        _gk_show = _gk_agg[["상품바코드", "상품명", "수량", "출판사"]].copy()
+        st.dataframe(_gk_show, hide_index=True, use_container_width=True)
+
+        _gk_result = pd.DataFrame()
+        _gk_result["NO."] = range(1, len(_gk_agg) + 1)
+        _gk_result["상품바코드"] = _gk_agg["상품바코드"].values
+        _gk_result["상품명"] = _gk_agg["상품명"].values
+        _gk_result["#"] = ""
+        _gk_result["정 가"] = _gk_agg["정가"].apply(lambda x: int(x) if pd.notna(x) else 0).values
+        _gk_result["수 량"] = _gk_agg["수량"].values
+        _gk_result["%"] = _gk_agg["공급률"].apply(lambda x: f"{x*100:.0f}" if pd.notna(x) and x else "").values
+        _gk_result["단 가"] = _gk_agg.apply(
+            lambda r: int(r["정가"] * r["공급률"]) if pd.notna(r["공급률"]) and r["공급률"] and pd.notna(r["정가"]) else (int(r["정가"]) if pd.notna(r["정가"]) else 0),
+            axis=1
+        ).values
+        _gk_result["금 액"] = (_gk_result["단 가"] * _gk_result["수 량"]).values
+        _gk_result[""] = ""
+        _gk_result["출판사"] = _gk_agg["출판사"].apply(lambda x: str(x) if pd.notna(x) else "").values
+        _gk_result["저자"] = _gk_agg["저자"].apply(lambda x: str(x) if pd.notna(x) else "").values
+        _gk_result["출판년도"] = _gk_agg["출판년도"].apply(lambda x: str(int(x)) if pd.notna(x) else "").values
+
+        _gk_buf = io.BytesIO()
+        with pd.ExcelWriter(_gk_buf, engine="openpyxl") as writer:
+            _gk_result.to_excel(writer, sheet_name="극동", index=False)
+        _gk_buf.seek(0)
+
+        st.download_button(
+            f"📥 극동 다운로드 ({len(_gk_agg)}종 / {int(_gk_agg['수량'].sum())}권)",
+            _gk_buf.getvalue(),
+            file_name=f"극동_{date.today().strftime('%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="t4_gk_xlsx_dl",
+        )
 
 
 def _render_history_search():
