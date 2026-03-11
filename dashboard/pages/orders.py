@@ -387,6 +387,8 @@ def render(selected_account, accounts_df, account_names):
             if _current_step == 0:
                 # ── ① 다운로드 단계 ──
                 _render_delivery_list(_t2_filtered, accounts_df)
+                # 발주서 (접힌 상태)
+                _render_purchase_order(_t2_filtered, accounts_df, key_prefix="t2")
 
             elif _current_step == 1:
                 # ── ② 한진 단계 ──
@@ -609,36 +611,41 @@ def _render_today_dashboard():
             },
         )
 
-    # ── 당일 합산 발주서 ──
+    # ── 당일 합산 발주서 (orders 테이블 기반 — 전체 주문 포함) ──
     st.divider()
     st.subheader("당일 합산 발주서")
 
-    _po_today_raw = query_df("""
-        SELECT p.book_title, p.isbn, p.publisher, p.distributor, p.quantity,
-               b.list_price, COALESCE(b.author, '') AS author,
-               b.year AS pub_year, pub.supply_rate
-        FROM purchase_order_logs p
-        LEFT JOIN books b ON p.isbn = b.isbn AND p.isbn IS NOT NULL AND p.isbn != ''
-        LEFT JOIN publishers pub ON b.publisher_id = pub.id
-        WHERE CAST(p.ordered_at + INTERVAL '9 hours' AS date) = CURRENT_DATE
+    _po_orders_raw = query_df("""
+        SELECT DISTINCT ON (o.shipment_box_id)
+               o.shipment_box_id AS "묶음배송번호",
+               o.order_id AS "주문번호",
+               o.seller_product_name AS "상품명",
+               o.vendor_item_name AS "옵션명",
+               o.shipping_count AS "수량",
+               o.order_price AS "결제금액",
+               o.account_id AS "_account_id",
+               o.vendor_item_id AS "_vendor_item_id",
+               o.seller_product_id AS "_seller_product_id"
+        FROM orders o
+        WHERE (o.ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
+          AND o.canceled = false
+        ORDER BY o.shipment_box_id, o.updated_at DESC
     """)
-    _po_today = _po_today_raw.copy()
 
-    if _po_today.empty:
-        st.info("오늘 처리된 발주 내역이 없습니다.")
+    if _po_orders_raw.empty:
+        st.info("오늘 주문이 없습니다.")
     else:
-        # 거래처/출판사/도서명 기준 합산
-        _po_today = _po_today.rename(columns={
-            "book_title": "도서명", "isbn": "ISBN",
-            "publisher": "출판사", "distributor": "거래처",
-            "quantity": "수량",
-        })
-        _po_today["거래처"] = _po_today["거래처"].fillna("미지정")
-        _po_today["출판사"] = _po_today["출판사"].fillna("")
+        _po_enriched = _enrich_purchase_order_data(_po_orders_raw)
+        _po_enriched["거래처"] = _po_enriched["거래처"].fillna("미지정")
+        _po_enriched["출판사"] = _po_enriched["출판사"].fillna("")
 
-        _po_agg = _po_today.groupby(["거래처", "출판사", "도서명"]).agg(
-            ISBN=("ISBN", "first"), 주문수량=("수량", "sum"),
-        ).reset_index().sort_values(["거래처", "출판사", "도서명"])
+        _po_enriched["_group_key"] = _po_enriched.apply(
+            lambda r: r["ISBN"] if r.get("ISBN") else r["도서명"], axis=1
+        )
+        _po_agg = _po_enriched.groupby(["거래처", "출판사", "_group_key"]).agg(
+            도서명=("도서명", "first"), ISBN=("ISBN", "first"), 주문수량=("수량", "sum"),
+        ).reset_index().drop(columns=["_group_key"])
+        _po_agg = _po_agg.sort_values(["거래처", "출판사", "도서명"])
 
         # 거래처별 요약 테이블
         _po_summary = _po_agg.groupby("거래처").agg(
@@ -672,7 +679,7 @@ def _render_today_dashboard():
             key="t4_po_merged_dl",
         )
 
-        st.caption(f"오늘 {int(_k.get('today_po_batches', 0))}개 배치의 발주 데이터를 합산했습니다.")
+        st.caption(f"오늘 주문 {len(_po_orders_raw)}건 기준 (orders 테이블 직접 조회)")
 
     # ── 당일 극동 출고 엑셀 ──
     st.divider()
