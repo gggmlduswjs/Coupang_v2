@@ -656,6 +656,15 @@ def _render_today_dashboard():
             },
         )
 
+        with st.expander(f"발주 상세 ({len(_po_agg)}종 / {int(_po_agg['주문수량'].sum())}권)"):
+            st.dataframe(
+                _po_agg, hide_index=True, use_container_width=True,
+                column_config={
+                    "도서명": st.column_config.TextColumn(width="large"),
+                    "주문수량": st.column_config.NumberColumn(format="%d권"),
+                },
+            )
+
         _store_name = st.session_state.get("order_store_name", "잉글리쉬존")
         _xl_buf = _build_purchase_order_excel(_po_agg, _store_name)
         _today_str = date.today().strftime("%Y%m%d")
