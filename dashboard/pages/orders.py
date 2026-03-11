@@ -618,6 +618,57 @@ def _render_today_dashboard():
             },
         )
 
+    # ── 당일 합산 발주서 ──
+    st.divider()
+    st.subheader("당일 합산 발주서")
+
+    _po_today = query_df("""
+        SELECT book_title, isbn, publisher, distributor, quantity
+        FROM purchase_order_logs
+        WHERE CAST(ordered_at + INTERVAL '9 hours' AS date) = CURRENT_DATE
+    """)
+
+    if _po_today.empty:
+        st.info("오늘 처리된 발주 내역이 없습니다.")
+    else:
+        # 거래처/출판사/도서명 기준 합산
+        _po_today = _po_today.rename(columns={
+            "book_title": "도서명", "isbn": "ISBN",
+            "publisher": "출판사", "distributor": "거래처",
+            "quantity": "수량",
+        })
+        _po_today["거래처"] = _po_today["거래처"].fillna("미지정")
+        _po_today["출판사"] = _po_today["출판사"].fillna("")
+
+        _po_agg = _po_today.groupby(["거래처", "출판사", "도서명"]).agg(
+            ISBN=("ISBN", "first"), 주문수량=("수량", "sum"),
+        ).reset_index().sort_values(["거래처", "출판사", "도서명"])
+
+        # 거래처별 요약 테이블
+        _po_summary = _po_agg.groupby("거래처").agg(
+            종수=("도서명", "count"), 총수량=("주문수량", "sum"),
+        ).reset_index().sort_values("총수량", ascending=False)
+        st.dataframe(
+            _po_summary, hide_index=True, use_container_width=True,
+            column_config={
+                "종수": st.column_config.NumberColumn(format="%d종"),
+                "총수량": st.column_config.NumberColumn(format="%d권"),
+            },
+        )
+
+        _store_name = st.session_state.get("order_store_name", "잉글리쉬존")
+        _xl_buf = _build_purchase_order_excel(_po_agg, _store_name)
+        _today_str = date.today().strftime("%Y%m%d")
+        st.download_button(
+            "📥 당일 합산 발주서 다운로드",
+            data=_xl_buf,
+            file_name=f"발주서_합산_{_today_str}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="t4_po_merged_dl",
+        )
+
+        st.caption(f"오늘 {int(_k.get('today_po_batches', 0))}개 배치의 발주 데이터를 합산했습니다.")
+
 
 def _render_history_search():
     """이력 검색 — 배치 상세 + 주문 DB 조회"""
