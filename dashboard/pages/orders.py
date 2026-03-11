@@ -289,13 +289,11 @@ def render(selected_account, accounts_df, account_names):
         _ik1.metric("상품준비중 주문", f"{_inst_total:,}건")
         _ik2.metric("총 금액", f"₩{fmt_krw_short(_inst_amount)}")
 
-        # ── 스텝 진행 상황 ──
+        # ── 스텝 진행 상황 (3단계) ──
         _step_defs = [
-            ("_step_purchase_order", "발주서"),
-            ("_step_geukdong", "극동"),
-            ("_step_delivery_list", "배송리스트"),
-            ("_step_hanjin", "한진"),
-            ("_step_invoice", "송장등록"),
+            ("_step_delivery_list", "① 다운로드"),
+            ("_step_hanjin", "② 한진"),
+            ("_step_invoice", "③ 송장등록"),
         ]
         _sc = st.columns(len(_step_defs))
         for _col, (_skey, _slabel) in zip(_sc, _step_defs):
@@ -351,19 +349,19 @@ def render(selected_account, accounts_df, account_names):
 
             st.divider()
 
-            # 2-1. 발주서
+            # ── ① 다운로드 ──
+            _render_delivery_list(_t2_filtered, accounts_df)
             _render_purchase_order(_t2_filtered, accounts_df, key_prefix="t2")
-
-            # 2-2. 극동 엑셀
             _render_geukdong_excel(_t2_filtered, accounts_df, key_prefix="t2")
 
-            # 2-3. 배송리스트 다운로드
-            _render_delivery_list(_t2_filtered, accounts_df)
+            st.divider()
 
-            # 2-4. 한진 N-Focus 송장 발급
+            # ── ② 한진 ──
             _render_hanjin_nfocus()
 
-            # 2-5. 쿠팡 송장 등록
+            st.divider()
+
+            # ── ③ 송장등록 ──
             _render_invoice_upload(_t2_filtered, accounts_df)
 
     # ══════════════════════════════════════
@@ -1170,7 +1168,7 @@ def _render_geukdong_excel(instruct_all, accounts_df, key_prefix="t2"):
 
 def _render_delivery_list(instruct_all, accounts_df=None):
     """2-4. 배송리스트 다운로드 (책별 정렬, 세션 저장)"""
-    with st.expander("📦 배송리스트 다운로드", expanded=False):
+    with st.expander("📦 배송리스트 다운로드", expanded=True):
         if instruct_all.empty:
             st.info("상품준비중 주문이 없습니다.")
             return
@@ -1347,221 +1345,215 @@ def _render_delivery_list(instruct_all, accounts_df=None):
 
 
 def _render_hanjin_nfocus():
-    """2-5. 한진 N-Focus 바로가기"""
-    with st.expander("🚚 한진 N-Focus 송장 발급", expanded=False):
-        st.caption("배송리스트 엑셀을 한진 N-Focus에 업로드하여 송장을 발급하세요.")
-        st.markdown("""
-**순서:**
-1. 위 '배송리스트 다운로드'에서 엑셀 다운로드
-2. 아래 링크에서 N-Focus 접속 → 출력자료등록 → 엑셀 업로드 → 오류체크 → 출력
-3. 출력자료등록 엑셀 다운로드
-4. 아래 '쿠팡 송장 등록'에서 해당 엑셀 업로드 → 자동 매칭 → 쿠팡 등록
-        """)
+    """한진 N-Focus — 배송리스트 업로드 → 운송장 발급"""
+    st.caption("배송리스트 엑셀을 한진 N-Focus에 업로드 → 오류체크 → 출력 → 출력자료등록 엑셀 다운로드")
+    _hc1, _hc2 = st.columns([3, 1])
+    with _hc1:
         st.link_button("한진 N-Focus 열기", "https://focus.hanjin.com/release/listup", type="primary", use_container_width=True)
-        if st.checkbox("한진 업로드 완료", value=st.session_state.get("_step_hanjin", False), key="t2_hanjin_done"):
+    with _hc2:
+        if st.checkbox("완료", value=st.session_state.get("_step_hanjin", False), key="t2_hanjin_done"):
             st.session_state["_step_hanjin"] = True
         else:
             st.session_state.pop("_step_hanjin", None)
 
 
 def _render_invoice_upload(instruct_all, accounts_df):
-    """2-6. 쿠팡 송장 등록 — invoice_matcher 기반 간소화"""
-    with st.expander("📋 쿠팡 송장 등록", expanded=False):
-        st.caption("한진 출력자료등록 엑셀을 업로드하면 자동으로 배송리스트와 매칭하여 쿠팡에 송장을 등록합니다.")
+    """송장 등록 — 한진 출력자료 업로드 → 자동 매칭 → 쿠팡 등록"""
+    st.caption("한진 출력자료등록 엑셀을 업로드하면 자동으로 배송리스트와 매칭하여 쿠팡에 송장을 등록합니다.")
 
-        _inv_file = st.file_uploader("한진 출력자료등록 엑셀 (운송장번호 포함)", type=["xlsx", "xls"], key="t2_inv_file")
-        if _inv_file is None:
-            return
+    _inv_file = st.file_uploader("한진 출력자료등록 엑셀 (운송장번호 포함)", type=["xlsx", "xls"], key="t2_inv_file")
+    if _inv_file is None:
+        return
 
-        try:
-            _inv_df = pd.read_excel(_inv_file)
-        except Exception as e:
-            st.error(f"엑셀 파일 읽기 오류: {e}")
-            return
+    try:
+        _inv_df = pd.read_excel(_inv_file)
+    except Exception as e:
+        st.error(f"엑셀 파일 읽기 오류: {e}")
+        return
 
-        # ── 1. 배치 선택 + 로드 ──
-        _batches = list_batches()
-        _batch_df = None
-        if _batches is not None and not _batches.empty:
+    # ── 1. 배치 자동 감지 ──
+    _batches = list_batches()
+    _batch_df = None
+    if _batches is not None and not _batches.empty:
+        _auto_idx = 0  # 최신 배치 자동 선택
+        if len(_batches) > 1:
             _batch_options = []
             for _, _b in _batches.iterrows():
                 _dl_dt = _b["downloaded_at"]
                 _dt_str = _dl_dt.strftime("%m/%d %H:%M") if hasattr(_dl_dt, "strftime") else str(_dl_dt)[:16]
                 _batch_options.append(f"{_dt_str} ({_b['count']}건)")
-            _sel_idx = st.selectbox(
-                "배치 선택 (배송리스트 다운로드 이력)",
-                range(len(_batch_options)),
+            _auto_idx = st.selectbox(
+                "배치", range(len(_batch_options)),
                 format_func=lambda i: _batch_options[i],
                 key="t2_batch_select",
-                help="한진에 업로드한 배송리스트에 해당하는 배치를 선택하세요. 기본값은 가장 최근.",
             )
-            _sel_batch_id = _batches.iloc[_sel_idx]["batch_id"]
-            _batch_df = load_latest_batch(batch_id=_sel_batch_id)
-            if _batch_df is not None:
-                _dl_at = _batch_df["_downloaded_at"].iloc[0]
-                _dl_date = _dl_at.strftime("%m/%d %H:%M") if hasattr(_dl_at, "strftime") else str(_dl_at)[:16]
-                st.info(f"선택된 배치: {_dl_date} ({len(_batch_df)}건)")
-        else:
-            st.caption("DB 배치 없음 — 이름 매칭(fallback) 사용")
+        _sel_batch_id = _batches.iloc[_auto_idx]["batch_id"]
+        _batch_df = load_latest_batch(batch_id=_sel_batch_id)
+        if _batch_df is not None:
+            _dl_at = _batch_df["_downloaded_at"].iloc[0]
+            _dl_date = _dl_at.strftime("%m/%d %H:%M") if hasattr(_dl_at, "strftime") else str(_dl_at)[:16]
+            st.caption(f"배치: {_dl_date} ({len(_batch_df)}건)")
+    else:
+        st.caption("DB 배치 없음 — 이름 매칭(fallback) 사용")
 
-        # ── 2. 매칭 ──
-        _matched_df, _method = match_invoices(_inv_df, _batch_df)
+    # ── 2. 매칭 ──
+    _matched_df, _method = match_invoices(_inv_df, _batch_df)
 
-        if _matched_df is None or _matched_df.empty:
-            st.warning("매칭 결과가 없습니다. 엑셀 형식을 확인하세요. ('순번/운송장번호' 또는 '묶음배송번호/주문번호/운송장번호' 필요)")
-            return
+    if _matched_df is None or _matched_df.empty:
+        st.warning("매칭 결과가 없습니다. 엑셀 형식을 확인하세요. ('순번/운송장번호' 또는 '묶음배송번호/주문번호/운송장번호' 필요)")
+        return
 
-        st.success(f"매칭 완료: {len(_matched_df)}건 ({_method})")
+    st.success(f"매칭 완료: {len(_matched_df)}건 ({_method})")
 
-        # ── 3. 등록 가능 여부 분류 ──
-        _result = check_registerable(_matched_df, instruct_all, _batch_df)
-        _reg_df = _result["registerable"]
-        _shipped_df = _result["already_shipped"]
-        _summary = _result["summary"]
+    # ── 3. 등록 가능 여부 분류 ──
+    _result = check_registerable(_matched_df, instruct_all, _batch_df)
+    _reg_df = _result["registerable"]
+    _shipped_df = _result["already_shipped"]
+    _summary = _result["summary"]
 
-        st.info(f"등록 가능: {_summary['등록가능']}건 / 이미 출고: {_summary['이미출고']}건")
+    st.info(f"등록 가능: {_summary['등록가능']}건 / 이미 출고: {_summary['이미출고']}건")
 
-        if not _shipped_df.empty:
-            with st.expander(f"이미 출고된 주문 ({_summary['이미출고']}건)"):
-                st.dataframe(_shipped_df[["묶음배송번호", "주문번호", "운송장번호"]].drop_duplicates(), hide_index=True)
+    if not _shipped_df.empty:
+        with st.expander(f"이미 출고된 주문 ({_summary['이미출고']}건)"):
+            st.dataframe(_shipped_df[["묶음배송번호", "주문번호", "운송장번호"]].drop_duplicates(), hide_index=True)
 
-        if _reg_df.empty:
-            st.info("등록할 송장이 없습니다.")
-            return
+    if _reg_df.empty:
+        st.info("등록할 송장이 없습니다.")
+        return
 
-        # 계정별 건수
-        _acct_id_map = dict(zip(accounts_df["id"].astype(int), accounts_df["account_name"]))
-        _reg_df["계정"] = _reg_df["_account_id"].astype(int).map(_acct_id_map)
-        _acct_summary = _reg_df.groupby("계정").size().reset_index(name="송장건수")
-        st.dataframe(_acct_summary, hide_index=True)
+    # 계정별 건수
+    _acct_id_map = dict(zip(accounts_df["id"].astype(int), accounts_df["account_name"]))
+    _reg_df["계정"] = _reg_df["_account_id"].astype(int).map(_acct_id_map)
+    _acct_summary = _reg_df.groupby("계정").size().reset_index(name="송장건수")
+    st.dataframe(_acct_summary, hide_index=True)
 
-        # ── 4. 출고중지요청 체크 ──
-        _stop_orders, _safe_df = _check_stop_shipment_requests(_reg_df, accounts_df)
+    # ── 4. 출고중지요청 체크 ──
+    _stop_orders, _safe_df = _check_stop_shipment_requests(_reg_df, accounts_df)
 
+    if not _stop_orders.empty:
+        st.warning(f"출고중지요청 {len(_stop_orders)}건 감지 — 해당 주문은 제외됩니다.")
+        with st.expander(f"출고중지요청 상세 ({len(_stop_orders)}건)", expanded=True):
+            _stop_display = _stop_orders[["계정", "주문번호", "묶음배송번호", "_receipt_id", "_cancel_count", "_cancel_reason"]].copy()
+            _stop_display.columns = ["계정", "주문번호", "묶음배송번호", "접수번호", "취소수량", "취소사유"]
+            st.dataframe(_stop_display, hide_index=True)
+
+            if st.button("출고중지완료 처리 (미출고 확인)", key="t2_btn_stop_shipment", type="secondary"):
+                _stop_ok = 0
+                _stop_fail = 0
+                for _aid, _sg in _stop_orders.groupby("_account_id"):
+                    _aid = int(_aid)
+                    _acct_row = accounts_df[accounts_df["id"] == _aid]
+                    if _acct_row.empty:
+                        continue
+                    _acct_row = _acct_row.iloc[0]
+                    _client = create_wing_client(_acct_row)
+                    if not _client:
+                        continue
+                    for _, _sr in _sg.iterrows():
+                        try:
+                            _client.stop_shipment(int(_sr["_receipt_id"]), int(_sr["_cancel_count"]))
+                            _stop_ok += 1
+                        except Exception as e:
+                            _stop_fail += 1
+                            st.error(f"[{_acct_row['account_name']}] 접수번호 {_sr['_receipt_id']}: {e}")
+                if _stop_ok > 0:
+                    st.success(f"출고중지완료 처리: {_stop_ok}건 성공" + (f", {_stop_fail}건 실패" if _stop_fail else ""))
+                    clear_order_caches()
+
+    if _safe_df.empty:
         if not _stop_orders.empty:
-            st.warning(f"출고중지요청 {len(_stop_orders)}건 감지 — 해당 주문은 제외됩니다.")
-            with st.expander(f"출고중지요청 상세 ({len(_stop_orders)}건)", expanded=True):
-                _stop_display = _stop_orders[["계정", "주문번호", "묶음배송번호", "_receipt_id", "_cancel_count", "_cancel_reason"]].copy()
-                _stop_display.columns = ["계정", "주문번호", "묶음배송번호", "접수번호", "취소수량", "취소사유"]
-                st.dataframe(_stop_display, hide_index=True)
+            st.info("출고중지 건을 제외하면 등록할 송장이 없습니다.")
+        return
 
-                if st.button("출고중지완료 처리 (미출고 확인)", key="t2_btn_stop_shipment", type="secondary"):
-                    _stop_ok = 0
-                    _stop_fail = 0
-                    for _aid, _sg in _stop_orders.groupby("_account_id"):
-                        _aid = int(_aid)
-                        _acct_row = accounts_df[accounts_df["id"] == _aid]
-                        if _acct_row.empty:
-                            continue
-                        _acct_row = _acct_row.iloc[0]
-                        _client = create_wing_client(_acct_row)
-                        if not _client:
-                            continue
-                        for _, _sr in _sg.iterrows():
-                            try:
-                                _client.stop_shipment(int(_sr["_receipt_id"]), int(_sr["_cancel_count"]))
-                                _stop_ok += 1
-                            except Exception as e:
-                                _stop_fail += 1
-                                st.error(f"[{_acct_row['account_name']}] 접수번호 {_sr['_receipt_id']}: {e}")
-                    if _stop_ok > 0:
-                        st.success(f"출고중지완료 처리: {_stop_ok}건 성공" + (f", {_stop_fail}건 실패" if _stop_fail else ""))
-                        clear_order_caches()
+    # ── 5. 묶음배송 중복 제거 + 등록 ──
+    _before_dedup = len(_safe_df)
+    _safe_df = _safe_df.drop_duplicates(subset=["묶음배송번호"], keep="first").copy()
+    if _before_dedup != len(_safe_df):
+        st.caption(f"묶음배송 중복 제거: {_before_dedup}행 → {len(_safe_df)}건")
 
-        if _safe_df.empty:
-            if not _stop_orders.empty:
-                st.info("출고중지 건을 제외하면 등록할 송장이 없습니다.")
-            return
+    if st.button(f"전체 송장 등록 ({len(_safe_df)}건)", key="t2_btn_bulk_invoice", type="primary"):
+        _total_success = 0
+        _total_fail = 0
+        _success_items = []
 
-        # ── 5. 묶음배송 중복 제거 + 등록 ──
-        _before_dedup = len(_safe_df)
-        _safe_df = _safe_df.drop_duplicates(subset=["묶음배송번호"], keep="first").copy()
-        if _before_dedup != len(_safe_df):
-            st.caption(f"묶음배송 중복 제거: {_before_dedup}행 → {len(_safe_df)}건")
+        for _aid, _grp in _safe_df.groupby("_account_id"):
+            _aid = int(_aid)
+            _acct_row = accounts_df[accounts_df["id"] == _aid]
+            if _acct_row.empty:
+                continue
+            _acct_row = _acct_row.iloc[0]
+            _client = create_wing_client(_acct_row)
+            if not _client:
+                st.error(f"[{_acct_row['account_name']}] API 클라이언트 생성 실패")
+                continue
 
-        if st.button(f"전체 송장 등록 ({len(_safe_df)}건)", key="t2_btn_bulk_invoice", type="primary"):
-            _total_success = 0
-            _total_fail = 0
-            _success_items = []
+            _inv_data = []
+            for _, _r in _grp.iterrows():
+                _vid = int(_r["_vendor_item_id"]) if pd.notna(_r.get("_vendor_item_id")) else 0
+                _inv_data.append({
+                    "shipmentBoxId": int(_r["묶음배송번호"]),
+                    "orderId": int(_r["주문번호"]),
+                    "vendorItemId": _vid,
+                    "deliveryCompanyCode": "HANJIN",
+                    "invoiceNumber": str(_r["운송장번호"]).strip(),
+                    "splitShipping": False,
+                    "preSplitShipped": False,
+                    "estimatedShippingDate": "",
+                })
 
-            for _aid, _grp in _safe_df.groupby("_account_id"):
-                _aid = int(_aid)
-                _acct_row = accounts_df[accounts_df["id"] == _aid]
-                if _acct_row.empty:
-                    continue
-                _acct_row = _acct_row.iloc[0]
-                _client = create_wing_client(_acct_row)
-                if not _client:
-                    st.error(f"[{_acct_row['account_name']}] API 클라이언트 생성 실패")
-                    continue
+            try:
+                _result = _client.upload_invoice(_inv_data)
+                _s_cnt = 0
+                _f_cnt = 0
+                if isinstance(_result, dict) and "data" in _result:
+                    for _ri in _result["data"].get("responseList", []):
+                        if _ri.get("succeed"):
+                            _s_cnt += 1
+                            _success_items.append({
+                                "shipmentBoxId": _ri.get("shipmentBoxId"),
+                                "invoiceNumber": str(_ri.get("invoiceNumber", "")),
+                                "deliveryCompanyCode": "HANJIN",
+                            })
+                        else:
+                            _f_cnt += 1
+                            st.error(f"  [{_acct_row['account_name']}] {_ri.get('shipmentBoxId')}: {_ri.get('resultMessage', '')}")
+                else:
+                    _s_cnt = len(_inv_data)
+                    _success_items.extend(_inv_data)
+                _total_success += _s_cnt
+                _total_fail += _f_cnt
+                st.info(f"[{_acct_row['account_name']}] 성공 {_s_cnt}건" + (f", 실패 {_f_cnt}건" if _f_cnt else ""))
+            except Exception as e:
+                _total_fail += len(_inv_data)
+                st.error(f"[{_acct_row['account_name']}] API 오류: {e}")
 
-                _inv_data = []
-                for _, _r in _grp.iterrows():
-                    _vid = int(_r["_vendor_item_id"]) if pd.notna(_r.get("_vendor_item_id")) else 0
-                    _inv_data.append({
-                        "shipmentBoxId": int(_r["묶음배송번호"]),
-                        "orderId": int(_r["주문번호"]),
-                        "vendorItemId": _vid,
-                        "deliveryCompanyCode": "HANJIN",
-                        "invoiceNumber": str(_r["운송장번호"]).strip(),
-                        "splitShipping": False,
-                        "preSplitShipped": False,
-                        "estimatedShippingDate": "",
-                    })
+        if _success_items:
+            _update_orders_status(_success_items)
+            # 송장 등록 성공 → registered 마킹 (삭제하면 재시도 시 매칭 깨짐)
+            try:
+                _success_box_ids = [int(s["shipmentBoxId"]) for s in _success_items]
+                from dashboard.utils import engine as _eng
+                from sqlalchemy import text as _sa_text
+                with _eng.connect() as _conn:
+                    _conn.execute(
+                        _sa_text("UPDATE delivery_list_logs SET registered = TRUE WHERE shipment_box_id = ANY(:ids)"),
+                        {"ids": _success_box_ids},
+                    )
+                    _conn.commit()
+            except Exception as e:
+                logger.warning(f"배송리스트 로그 등록마킹 실패: {e}")
 
-                try:
-                    _result = _client.upload_invoice(_inv_data)
-                    _s_cnt = 0
-                    _f_cnt = 0
-                    if isinstance(_result, dict) and "data" in _result:
-                        for _ri in _result["data"].get("responseList", []):
-                            if _ri.get("succeed"):
-                                _s_cnt += 1
-                                _success_items.append({
-                                    "shipmentBoxId": _ri.get("shipmentBoxId"),
-                                    "invoiceNumber": str(_ri.get("invoiceNumber", "")),
-                                    "deliveryCompanyCode": "HANJIN",
-                                })
-                            else:
-                                _f_cnt += 1
-                                st.error(f"  [{_acct_row['account_name']}] {_ri.get('shipmentBoxId')}: {_ri.get('resultMessage', '')}")
-                    else:
-                        _s_cnt = len(_inv_data)
-                        _success_items.extend(_inv_data)
-                    _total_success += _s_cnt
-                    _total_fail += _f_cnt
-                    st.info(f"[{_acct_row['account_name']}] 성공 {_s_cnt}건" + (f", 실패 {_f_cnt}건" if _f_cnt else ""))
-                except Exception as e:
-                    _total_fail += len(_inv_data)
-                    st.error(f"[{_acct_row['account_name']}] API 오류: {e}")
-
-            if _success_items:
-                _update_orders_status(_success_items)
-                # 송장 등록 성공 → registered 마킹 (삭제하면 재시도 시 매칭 깨짐)
-                try:
-                    _success_box_ids = [int(s["shipmentBoxId"]) for s in _success_items]
-                    from dashboard.utils import engine as _eng
-                    from sqlalchemy import text as _sa_text
-                    with _eng.connect() as _conn:
-                        _conn.execute(
-                            _sa_text("UPDATE delivery_list_logs SET registered = TRUE WHERE shipment_box_id = ANY(:ids)"),
-                            {"ids": _success_box_ids},
-                        )
-                        _conn.commit()
-                except Exception as e:
-                    logger.warning(f"배송리스트 로그 등록마킹 실패: {e}")
-
-            if _total_success > 0:
-                st.session_state["_step_invoice"] = True
-                _msg = f"송장 등록 완료: 총 {_total_success}건 성공"
-                if _total_fail:
-                    _msg += f", {_total_fail}건 실패"
-                st.session_state["_flash_messages"] = [("success", _msg)]
-                clear_order_caches()
-                st.session_state.pop("_delivery_list_df", None)
-                st.rerun()
-            elif _total_fail > 0:
-                st.error(f"전체 실패: {_total_fail}건 — 원인 확인 후 재시도하세요.")
+        if _total_success > 0:
+            st.session_state["_step_invoice"] = True
+            _msg = f"송장 등록 완료: 총 {_total_success}건 성공"
+            if _total_fail:
+                _msg += f", {_total_fail}건 실패"
+            st.session_state["_flash_messages"] = [("success", _msg)]
+            clear_order_caches()
+            st.session_state.pop("_delivery_list_df", None)
+            st.rerun()
+        elif _total_fail > 0:
+            st.error(f"전체 실패: {_total_fail}건 — 원인 확인 후 재시도하세요.")
 
 
 def _check_stop_shipment_requests(matched_df, accounts_df):
