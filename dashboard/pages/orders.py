@@ -10,7 +10,6 @@ import logging
 from datetime import date, datetime, timedelta
 
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder
 
@@ -423,121 +422,130 @@ def render(selected_account, accounts_df, account_names):
 
 
 def _render_order_stats():
-    """탭4: DB 주문현황 시각화"""
-    st.caption("DB에 저장된 주문 데이터 기준 (최근 30일)")
+    """탭4: 운영 이력 — 발주서 / 배송리스트 / 송장등록 현황"""
+    st.caption("발주서 → 배송리스트 → 송장등록 파이프라인 DB 저장 이력")
 
-    # ── (A) 상단 KPI ──
+    # ── (A) 상단 요약 KPI ──
     _kpi_df = query_df_cached("""
         SELECT
-            COUNT(*) AS total_orders,
-            MAX(updated_at + INTERVAL '9 hours') AS last_sync,
-            COUNT(*) FILTER (WHERE (ordered_at + INTERVAL '9 hours')::date = (NOW() + INTERVAL '9 hours')::date) AS today_orders,
-            COALESCE(SUM(order_price) FILTER (WHERE (ordered_at + INTERVAL '9 hours')::date = (NOW() + INTERVAL '9 hours')::date), 0) AS today_revenue
-        FROM orders
-        WHERE ordered_at >= NOW() - INTERVAL '30 days'
+            (SELECT COUNT(DISTINCT batch_id) FROM purchase_order_logs) AS po_batches,
+            (SELECT COUNT(*) FROM purchase_order_logs) AS po_rows,
+            (SELECT COUNT(DISTINCT batch_id) FROM delivery_list_logs) AS dl_batches,
+            (SELECT COUNT(*) FROM delivery_list_logs) AS dl_rows,
+            (SELECT COUNT(*) FROM delivery_list_logs WHERE registered = true) AS dl_registered,
+            (SELECT COUNT(*) FROM orders
+             WHERE invoice_number IS NOT NULL AND invoice_number != ''
+               AND ordered_at >= NOW() - INTERVAL '30 days') AS invoiced_orders
     """)
-
-    if _kpi_df.empty or _kpi_df.iloc[0]["total_orders"] == 0:
-        st.info("주문 데이터가 없습니다.")
+    if _kpi_df.empty:
+        st.info("데이터가 없습니다.")
         return
 
-    _row = _kpi_df.iloc[0]
-    _last_sync = _row["last_sync"]
-    if pd.notna(_last_sync):
-        _elapsed = datetime.now() - pd.Timestamp(_last_sync).to_pydatetime()
-        _mins = int(_elapsed.total_seconds() // 60)
-        _sync_text = f"{_mins}분 전" if _mins < 60 else f"{_mins // 60}시간 전"
-    else:
-        _sync_text = "-"
-
+    _r = _kpi_df.iloc[0]
     render_kpi_row([
-        ("DB 총 주문 수 (30일)", f"{int(_row['total_orders']):,}건"),
-        ("최근 동기화", _sync_text),
-        ("오늘 주문", f"{int(_row['today_orders']):,}건"),
-        ("오늘 매출", fmt_krw(int(_row["today_revenue"]))),
+        ("발주서 배치", f"{int(_r['po_batches'])}회 / {int(_r['po_rows'])}건"),
+        ("배송리스트 배치", f"{int(_r['dl_batches'])}회 / {int(_r['dl_rows'])}건"),
+        ("송장 등록 완료", f"{int(_r['dl_registered'])}건"),
+        ("운송장 있는 주문 (30일)", f"{int(_r['invoiced_orders'])}건"),
     ])
 
     st.divider()
 
-    # ── (B) 2열 차트: 상태별 파이 + 계정별 바 ──
-    _col_left, _col_right = st.columns(2)
-
-    with _col_left:
-        _status_df = query_df_cached("""
-            SELECT status, COUNT(*) AS cnt
-            FROM orders
-            WHERE ordered_at >= NOW() - INTERVAL '30 days'
-            GROUP BY status
-        """)
-        if not _status_df.empty:
-            _status_df["상태"] = _status_df["status"].map(STATUS_MAP).fillna(_status_df["status"])
-            fig_pie = px.pie(
-                _status_df, names="상태", values="cnt",
-                title="상태별 주문 분포 (30일)",
-                template="plotly_white", height=350,
-            )
-            fig_pie.update_traces(textinfo="label+percent+value")
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-    with _col_right:
-        _acct_df = query_df_cached("""
-            SELECT a.account_name AS account, o.status, COUNT(*) AS cnt
-            FROM orders o
-            JOIN accounts a ON o.account_id = a.id
-            WHERE o.ordered_at >= NOW() - INTERVAL '30 days'
-            GROUP BY a.account_name, o.status
-        """)
-        if not _acct_df.empty:
-            _acct_df["상태"] = _acct_df["status"].map(STATUS_MAP).fillna(_acct_df["status"])
-            fig_bar = px.bar(
-                _acct_df, x="account", y="cnt", color="상태",
-                title="계정별 주문 수 (30일)",
-                labels={"account": "계정", "cnt": "주문 수"},
-                template="plotly_white", height=350,
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-    # ── (C) 일별 주문 추이 ──
-    _daily_df = query_df_cached("""
-        SELECT (ordered_at + INTERVAL '9 hours')::date AS order_date, COUNT(*) AS cnt
-        FROM orders
-        WHERE ordered_at >= NOW() - INTERVAL '30 days'
-        GROUP BY order_date
-        ORDER BY order_date
+    # ── (B) 발주서 이력 ──
+    st.subheader("1. 발주서 이력")
+    _po_df = query_df_cached("""
+        SELECT
+            p.batch_id,
+            (MIN(p.ordered_at) + INTERVAL '9 hours')::timestamp AS 저장시각,
+            a.account_name AS 계정,
+            COUNT(*) AS 건수,
+            STRING_AGG(DISTINCT p.book_title, ', ' ORDER BY p.book_title) AS 도서목록
+        FROM purchase_order_logs p
+        JOIN accounts a ON p.account_id = a.id
+        GROUP BY p.batch_id, a.account_name
+        ORDER BY 저장시각 DESC
+        LIMIT 30
     """)
-    if not _daily_df.empty:
-        _daily_df["order_date"] = pd.to_datetime(_daily_df["order_date"])
-        _all_dates = pd.date_range(_daily_df["order_date"].min(), _daily_df["order_date"].max())
-        _daily_df = _daily_df.set_index("order_date").reindex(_all_dates, fill_value=0).rename_axis("order_date").reset_index()
-        fig_area = px.area(
-            _daily_df, x="order_date", y="cnt",
-            title="일별 주문 추이 (30일)",
-            labels={"order_date": "날짜", "cnt": "주문 수"},
-            template="plotly_white", height=350,
+    if _po_df.empty:
+        st.info("발주서 이력이 없습니다.")
+    else:
+        _po_df["저장시각"] = pd.to_datetime(_po_df["저장시각"]).dt.strftime("%m/%d %H:%M")
+        _po_df["도서목록"] = _po_df["도서목록"].str[:80] + _po_df["도서목록"].apply(
+            lambda x: "..." if isinstance(x, str) and len(x) > 80 else ""
         )
-        st.plotly_chart(fig_area, use_container_width=True)
+        st.dataframe(
+            _po_df[["저장시각", "계정", "건수", "도서목록"]],
+            hide_index=True, use_container_width=True,
+            column_config={"도서목록": st.column_config.TextColumn(width="large")},
+        )
 
-    # ── (D) 일매출 추이 ──
-    _rev_df = query_df_cached("""
-        SELECT (ordered_at + INTERVAL '9 hours')::date AS order_date,
-               COALESCE(SUM(order_price), 0) AS revenue
-        FROM orders
-        WHERE ordered_at >= NOW() - INTERVAL '30 days' AND canceled = false
-        GROUP BY order_date
-        ORDER BY order_date
+    st.divider()
+
+    # ── (C) 배송리스트 이력 ──
+    st.subheader("2. 배송리스트 이력")
+    _dl_df = query_df_cached("""
+        SELECT
+            d.batch_id,
+            (MIN(d.downloaded_at) + INTERVAL '9 hours')::timestamp AS 다운시각,
+            COUNT(*) AS 건수,
+            COUNT(*) FILTER (WHERE d.registered = true) AS 송장완료,
+            COUNT(*) FILTER (WHERE d.registered = false) AS 미등록,
+            STRING_AGG(DISTINCT d.receiver_name, ', ' ORDER BY d.receiver_name) AS 수취인목록
+        FROM delivery_list_logs d
+        WHERE d.batch_id IS NOT NULL
+        GROUP BY d.batch_id
+        ORDER BY 다운시각 DESC
+        LIMIT 30
     """)
-    if not _rev_df.empty:
-        _rev_df["order_date"] = pd.to_datetime(_rev_df["order_date"])
-        _all_dates_r = pd.date_range(_rev_df["order_date"].min(), _rev_df["order_date"].max())
-        _rev_df = _rev_df.set_index("order_date").reindex(_all_dates_r, fill_value=0).rename_axis("order_date").reset_index()
-        _rev_df["revenue_man"] = _rev_df["revenue"] / 10000
-        fig_rev = px.bar(
-            _rev_df, x="order_date", y="revenue_man",
-            title="일별 매출 추이 (30일, 만원)",
-            labels={"order_date": "날짜", "revenue_man": "매출 (만원)"},
-            template="plotly_white", height=350,
+    if _dl_df.empty:
+        st.info("배송리스트 이력이 없습니다.")
+    else:
+        _dl_df["다운시각"] = pd.to_datetime(_dl_df["다운시각"]).dt.strftime("%m/%d %H:%M")
+        _dl_df["진행"] = _dl_df.apply(
+            lambda r: f"{int(r['송장완료'])}/{int(r['건수'])} ({'완료' if int(r['미등록']) == 0 else '진행중'})",
+            axis=1,
         )
-        st.plotly_chart(fig_rev, use_container_width=True)
+        _dl_df["수취인목록"] = _dl_df["수취인목록"].str[:60] + _dl_df["수취인목록"].apply(
+            lambda x: "..." if isinstance(x, str) and len(x) > 60 else ""
+        )
+        st.dataframe(
+            _dl_df[["다운시각", "건수", "진행", "수취인목록"]],
+            hide_index=True, use_container_width=True,
+            column_config={"수취인목록": st.column_config.TextColumn(width="large")},
+        )
+
+    st.divider()
+
+    # ── (D) 송장 등록 현황 (최근 운송장 있는 주문) ──
+    st.subheader("3. 송장 등록 현황 (최근 30일)")
+    _inv_df = query_df_cached("""
+        SELECT
+            a.account_name AS 계정,
+            o.shipment_box_id AS 묶음배송번호,
+            o.order_id AS 주문번호,
+            o.receiver_name AS 수취인,
+            o.vendor_item_name AS 상품명,
+            o.delivery_company_name AS 택배사,
+            o.invoice_number AS 운송장번호,
+            o.status,
+            (o.ordered_at + INTERVAL '9 hours')::timestamp AS 주문일시
+        FROM orders o
+        JOIN accounts a ON o.account_id = a.id
+        WHERE o.invoice_number IS NOT NULL AND o.invoice_number != ''
+          AND o.ordered_at >= NOW() - INTERVAL '30 days'
+        ORDER BY o.ordered_at DESC
+        LIMIT 100
+    """)
+    if _inv_df.empty:
+        st.info("송장이 등록된 주문이 없습니다.")
+    else:
+        _inv_df["상태"] = _inv_df["status"].map(STATUS_MAP).fillna(_inv_df["status"])
+        _inv_df["주문일시"] = pd.to_datetime(_inv_df["주문일시"]).dt.strftime("%m/%d %H:%M")
+        st.dataframe(
+            _inv_df[["주문일시", "계정", "수취인", "상품명", "택배사", "운송장번호", "상태"]],
+            hide_index=True, use_container_width=True,
+            column_config={"상품명": st.column_config.TextColumn(width="large")},
+        )
 
 
 def _render_cancel_section(accounts_df, account_names, _accept_all, _instruct_live):
