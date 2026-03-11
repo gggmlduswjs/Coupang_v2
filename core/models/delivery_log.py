@@ -1,5 +1,5 @@
 """배송리스트 다운로드 이력 — 중복 송장 발급 방지 + 송장 매칭용 데이터"""
-from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Index
+from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Boolean, Index
 from datetime import datetime
 from core.database import Base
 
@@ -24,3 +24,4 @@ class DeliveryListLog(Base):
     seq_no = Column(Integer, nullable=True)  # 배송리스트 순번
     batch_id = Column(String(36), nullable=True)  # 같은 다운로드 이벤트 묶음
     downloaded_at = Column(DateTime, default=datetime.utcnow)
+    registered = Column(Boolean, default=False, nullable=False)  # 송장 등록 완료 여부

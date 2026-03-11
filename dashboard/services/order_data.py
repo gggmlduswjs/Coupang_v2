@@ -265,11 +265,13 @@ def sync_live_orders(accounts_df):
 def _build_receiver_suffix_map(orders_df):
     """동일 수취인+주소가 서로 다른 묶음배송번호에 있으면 구분자 부여.
 
-    한진이 같은 이름+주소를 합배송하는 것을 방지하기 위해
-    두 번째 건부터 이름 뒤에 ' (2)', ' (3)' 등을 붙인다.
+    한진이 같은 이름+주소+전화번호를 합배송하는 것을 방지하기 위해
+    이름과 주소 모두에 구분자를 부여한다.
+    (전화번호는 배송 연락용이므로 변경하지 않음)
 
     Returns:
-        dict: {묶음배송번호: 구분자 문자열} (첫 번째 건은 ""로 변경 없음)
+        dict: {묶음배송번호: {"name": str, "addr": str}}
+              첫 번째 건은 name="", addr="" (변경 없음)
     """
     key_to_boxes = {}  # (수취인, 주소) → [묶음배송번호, ...]
     for _, row in orders_df.iterrows():
@@ -282,13 +284,14 @@ def _build_receiver_suffix_map(orders_df):
         if box_id not in key_to_boxes[key]:
             key_to_boxes[key].append(box_id)
 
-    suffix_map = {}  # 묶음배송번호 → 구분자
+    suffix_map = {}  # 묶음배송번호 → {"name": suffix, "addr": suffix}
     for (name, addr), box_ids in key_to_boxes.items():
         if len(box_ids) <= 1:
             continue
         # 모든 건에 구분자 부여 — 첫 번째도 (1)로 표시하여 한진 합포장 방지
         for i, box_id in enumerate(box_ids):
-            suffix_map[box_id] = f" ({i + 1})"
+            tag = f" ({i + 1})"
+            suffix_map[box_id] = {"name": tag, "addr": tag}
     return suffix_map
 
 
@@ -305,7 +308,11 @@ def build_delivery_rows(orders_df):
     for idx, (_i, row) in enumerate(orders_df.iterrows(), 1):
         box_id = int(row["묶음배송번호"])
         receiver_name = str(row.get("수취인", ""))
-        suffix = suffix_map.get(box_id, "")
+        receiver_addr = str(row.get("수취인주소", ""))
+        suffixes = suffix_map.get(box_id, {"name": "", "addr": ""})
+        # 하위호환: 기존 문자열 suffix도 처리
+        if isinstance(suffixes, str):
+            suffixes = {"name": suffixes, "addr": ""}
 
         rows.append({
             "번호": idx,
@@ -334,10 +341,10 @@ def build_delivery_rows(orders_df):
             "옵션판매가(판매단가)": int(row.get("판매단가", 0) or row.get("결제금액", 0)),
             "구매자": row.get("구매자", ""),
             "구매자전화번호": row.get("구매자전화번호", ""),
-            "수취인이름": receiver_name + suffix,
+            "수취인이름": receiver_name + suffixes["name"],
             "수취인전화번호": row.get("수취인전화번호", ""),
             "우편번호": row.get("우편번호", ""),
-            "수취인 주소": row.get("수취인주소", ""),
+            "수취인 주소": receiver_addr + suffixes["addr"],
             "배송메세지": row.get("배송메세지", ""),
             "상품별 추가메시지": "",
             "주문자 추가메시지": "",

@@ -150,8 +150,11 @@ def save_ordersheets_to_db(acct, ordersheets, status):
                         }
                         try:
                             conn.execute(sa_text(_UPSERT_ORDER_SQL), params)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(
+                                f"주문 UPSERT 실패 (box={params.get('shipment_box_id')}, "
+                                f"vid={params.get('vendor_item_id')}): {e}"
+                            )
                 conn.commit()
         except Exception as e:
             logger.warning(f"주문 DB 저장 오류: {e}")

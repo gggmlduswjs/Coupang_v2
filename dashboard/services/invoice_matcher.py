@@ -23,29 +23,62 @@ logger = logging.getLogger(__name__)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def load_latest_batch() -> Optional[pd.DataFrame]:
-    """DB에서 가장 최근 batch_id의 배송리스트를 seq_no 순으로 로드.
+def list_batches(limit: int = 20) -> Optional[pd.DataFrame]:
+    """DB에서 배치 목록 조회 (최신순).
+
+    Returns:
+        DataFrame with columns: batch_id, downloaded_at, count  /  None if empty.
+    """
+    db = SessionLocal()
+    try:
+        from sqlalchemy import func
+        results = (
+            db.query(
+                DeliveryListLog.batch_id,
+                func.min(DeliveryListLog.downloaded_at).label("downloaded_at"),
+                func.count().label("count"),
+            )
+            .filter(DeliveryListLog.batch_id.isnot(None))
+            .group_by(DeliveryListLog.batch_id)
+            .order_by(desc(func.min(DeliveryListLog.downloaded_at)))
+            .limit(limit)
+            .all()
+        )
+        if not results:
+            return None
+        rows = [{"batch_id": r[0], "downloaded_at": r[1], "count": r[2]} for r in results]
+        return pd.DataFrame(rows)
+    except Exception as e:
+        logger.warning(f"배치 목록 조회 실패: {e}")
+        return None
+    finally:
+        db.close()
+
+
+def load_latest_batch(batch_id: Optional[str] = None) -> Optional[pd.DataFrame]:
+    """DB에서 배송리스트 배치를 seq_no 순으로 로드.
+
+    Args:
+        batch_id: 특정 배치 ID. None이면 가장 최근 배치.
 
     Returns:
         DataFrame with columns: 번호, 묶음배송번호, 주문번호, 수취인이름,
         구매자, _account_id, _vendor_item_id  /  None if empty.
     """
+    db = SessionLocal()
     try:
-        db = SessionLocal()
-        # 최신 batch_id 조회
-        latest = db.query(DeliveryListLog.batch_id).filter(
-            DeliveryListLog.batch_id.isnot(None),
-        ).order_by(desc(DeliveryListLog.downloaded_at)).first()
+        if batch_id is None:
+            latest = db.query(DeliveryListLog.batch_id).filter(
+                DeliveryListLog.batch_id.isnot(None),
+            ).order_by(desc(DeliveryListLog.downloaded_at)).first()
 
-        if not latest or not latest[0]:
-            db.close()
-            return None
+            if not latest or not latest[0]:
+                return None
+            batch_id = latest[0]
 
-        batch_id = latest[0]
         logs = db.query(DeliveryListLog).filter(
             DeliveryListLog.batch_id == batch_id,
         ).order_by(DeliveryListLog.seq_no).all()
-        db.close()
 
         if not logs:
             return None
@@ -62,13 +95,15 @@ def load_latest_batch() -> Optional[pd.DataFrame]:
                 "_vendor_item_id": log.vendor_item_id or 0,
                 "_batch_id": batch_id,
                 "_downloaded_at": log.downloaded_at,
+                "_registered": getattr(log, "registered", False) or False,
             })
 
-        df = pd.DataFrame(rows)
-        return df
+        return pd.DataFrame(rows)
     except Exception as e:
-        logger.warning(f"최신 배치 로드 실패: {e}")
+        logger.warning(f"배치 로드 실패: {e}")
         return None
+    finally:
+        db.close()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -146,6 +181,12 @@ def _match_by_row_order(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Opti
     return pd.DataFrame(results) if results else None
 
 
+def _strip_receiver_suffix(name: str) -> str:
+    """수취인 이름에서 합배송 방지 구분자 제거. '이수희 (2)' → '이수희'"""
+    import re
+    return re.sub(r"\s*\(\d+\)$", "", name).strip()
+
+
 def _match_by_name(hanjin_df: pd.DataFrame, recv_col: str) -> Optional[pd.DataFrame]:
     """전략3: DB orders 테이블에서 수취인/주문자 이름으로 매칭 (fallback)."""
     hj = hanjin_df[hanjin_df["운송장번호"].notna() & (hanjin_df["운송장번호"] != "")].copy()
@@ -154,7 +195,7 @@ def _match_by_name(hanjin_df: pd.DataFrame, recv_col: str) -> Optional[pd.DataFr
 
     names = set()
     for _, hr in hj.iterrows():
-        n = str(hr[recv_col]).strip()
+        n = _strip_receiver_suffix(str(hr[recv_col]).strip())
         if n and n != "nan":
             names.add(n)
     if not names:
@@ -168,6 +209,7 @@ def _match_by_name(hanjin_df: pd.DataFrame, recv_col: str) -> Optional[pd.DataFr
             FROM orders
             WHERE (receiver_name = ANY(:names) OR orderer_name = ANY(:names))
               AND ordered_at >= NOW() - INTERVAL '14 days'
+              AND status IN ('INSTRUCT', 'ACCEPT')
             ORDER BY ordered_at DESC
         """
         with engine.connect() as conn:
@@ -190,7 +232,7 @@ def _match_by_name(hanjin_df: pd.DataFrame, recv_col: str) -> Optional[pd.DataFr
 
     for _, hr in hj_unique.iterrows():
         invoice = str(hr["운송장번호"]).strip()
-        hj_name = str(hr[recv_col]).strip()
+        hj_name = _strip_receiver_suffix(str(hr[recv_col]).strip())
         if not hj_name or hj_name == "nan":
             continue
 
@@ -289,12 +331,19 @@ def match_invoices(hanjin_df: pd.DataFrame, batch_df: Optional[pd.DataFrame]) ->
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def check_registerable(matched_df: pd.DataFrame, instruct_df: pd.DataFrame) -> dict:
+def check_registerable(matched_df: pd.DataFrame, instruct_df: pd.DataFrame,
+                       batch_df: Optional[pd.DataFrame] = None) -> dict:
     """매칭된 송장을 현재 INSTRUCT 주문과 대조 → 등록 가능/이미출고 분류.
+
+    판별 우선순위:
+    1) batch_df에 registered=True → 이미 등록됨 (확정)
+    2) instruct_df에 있음 → 등록 가능
+    3) 둘 다 아님 → 이미 출고 (DEPARTURE 이후)
 
     Args:
         matched_df: match_invoices() 결과
         instruct_df: 현재 INSTRUCT 상태 주문 (취소 제외)
+        batch_df: load_latest_batch() 결과 (registered 플래그 포함)
 
     Returns:
         {
@@ -313,15 +362,21 @@ def check_registerable(matched_df: pd.DataFrame, instruct_df: pd.DataFrame) -> d
     matched = matched_df.copy()
     matched["_box_str"] = matched["묶음배송번호"].astype(str)
 
-    if instruct_df.empty:
-        return {
-            "registerable": pd.DataFrame(),
-            "already_shipped": matched.drop(columns=["_box_str"]),
-            "summary": {"등록가능": 0, "이미출고": len(matched)},
-        }
+    # 1) 배치에서 이미 등록된 건 제외
+    already_registered_boxes = set()
+    if batch_df is not None and "_registered" in batch_df.columns:
+        reg_rows = batch_df[batch_df["_registered"] == True]
+        already_registered_boxes = set(reg_rows["묶음배송번호"].astype(str))
 
-    current_boxes = set(instruct_df["묶음배송번호"].astype(str))
-    is_registerable = matched["_box_str"].isin(current_boxes)
+    # 2) INSTRUCT 주문 집합
+    current_boxes = set()
+    if not instruct_df.empty:
+        current_boxes = set(instruct_df["묶음배송번호"].astype(str))
+
+    # 분류
+    is_already_registered = matched["_box_str"].isin(already_registered_boxes)
+    is_in_instruct = matched["_box_str"].isin(current_boxes)
+    is_registerable = ~is_already_registered & is_in_instruct
 
     registerable = matched[is_registerable].drop(columns=["_box_str"]).copy()
     already_shipped = matched[~is_registerable].drop(columns=["_box_str"]).copy()

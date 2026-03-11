@@ -40,6 +40,7 @@ from dashboard.services.order_service import (
     update_orders_status_after_invoice as _update_orders_status,
 )
 from dashboard.services.invoice_matcher import (
+    list_batches,
     load_latest_batch,
     match_invoices,
     check_registerable,
@@ -825,7 +826,7 @@ def _render_purchase_order(instruct_all, accounts_df, key_prefix="t2"):
                         _ord_date_to_str = str(_dist_dates.max())
                 _file_date = _ord_date_to_str.replace("-", "")[2:]
 
-                st.download_button(
+                if st.download_button(
                     "📥 발주서 Excel 다운로드",
                     _xl_buf.getvalue(),
                     file_name=f"쿠팡{_file_date}.xlsx",
@@ -833,7 +834,13 @@ def _render_purchase_order(instruct_all, accounts_df, key_prefix="t2"):
                     key=f"{key_prefix}_dist_xlsx_dl",
                     type="primary",
                     use_container_width=True,
-                )
+                ):
+                    # 발주서 다운로드 시 독립적으로 DB 저장
+                    try:
+                        _po_batch = _save_purchase_order_to_db(_dist_orders)
+                        st.success(f"발주 이력 저장 ({len(_dist_orders)}건)")
+                    except Exception as e:
+                        logger.warning(f"발주 스냅샷 저장 실패: {e}")
 
                 _dist_names_sorted = _dist_summary["거래처"].tolist()
                 _dist_filter = st.multiselect(
@@ -1204,18 +1211,26 @@ def _render_delivery_list(instruct_all):
                 from dashboard.utils import engine as _eng
 
                 _batch_id = str(uuid4())
-                with _eng.connect() as _conn:
-                    for _seq, (_, _r) in enumerate(_dl_df.iterrows(), 1):
-                        _vals = {
-                            "shipment_box_id": int(_r["묶음배송번호"]),
+                _seen_boxes = {}  # shipment_box_id → {seq_no, vals} (box 단위, 첫 아이템만)
+                _box_seq = 0
+                for _, _r in _dl_df.iterrows():
+                    _box_id = int(_r["묶음배송번호"])
+                    if _box_id not in _seen_boxes:
+                        _box_seq += 1
+                        _seen_boxes[_box_id] = {
+                            "shipment_box_id": _box_id,
                             "account_id": int(_r["_account_id"]),
                             "order_id": int(_r.get("주문번호", 0) or 0),
                             "vendor_item_id": int(_r.get("_vendor_item_id", 0) or 0),
                             "receiver_name": str(_r.get("수취인이름", "")).strip(),
                             "buyer_name": str(_r.get("구매자", "")).strip(),
-                            "seq_no": _seq,
+                            "seq_no": _box_seq,
                             "batch_id": _batch_id,
                         }
+                    # 같은 box의 두 번째 아이템 이후는 무시 (첫 아이템 값 유지)
+
+                with _eng.connect() as _conn:
+                    for _vals in _seen_boxes.values():
                         _stmt = pg_insert(DeliveryListLog.__table__).values(**_vals)
                         _stmt = _stmt.on_conflict_do_update(
                             index_elements=["shipment_box_id"],
@@ -1278,12 +1293,28 @@ def _render_invoice_upload(instruct_all, accounts_df):
             st.error(f"엑셀 파일 읽기 오류: {e}")
             return
 
-        # ── 1. 최신 배치 로드 (DB, 세션/컴퓨터 무관) ──
-        _batch_df = load_latest_batch()
-        if _batch_df is not None:
-            _dl_at = _batch_df["_downloaded_at"].iloc[0]
-            _dl_date = _dl_at.strftime("%m/%d %H:%M") if hasattr(_dl_at, "strftime") else str(_dl_at)[:16]
-            st.info(f"배치: {_dl_date} ({len(_batch_df)}건)")
+        # ── 1. 배치 선택 + 로드 ──
+        _batches = list_batches()
+        _batch_df = None
+        if _batches is not None and not _batches.empty:
+            _batch_options = []
+            for _, _b in _batches.iterrows():
+                _dl_dt = _b["downloaded_at"]
+                _dt_str = _dl_dt.strftime("%m/%d %H:%M") if hasattr(_dl_dt, "strftime") else str(_dl_dt)[:16]
+                _batch_options.append(f"{_dt_str} ({_b['count']}건)")
+            _sel_idx = st.selectbox(
+                "배치 선택 (배송리스트 다운로드 이력)",
+                range(len(_batch_options)),
+                format_func=lambda i: _batch_options[i],
+                key="t2_batch_select",
+                help="한진에 업로드한 배송리스트에 해당하는 배치를 선택하세요. 기본값은 가장 최근.",
+            )
+            _sel_batch_id = _batches.iloc[_sel_idx]["batch_id"]
+            _batch_df = load_latest_batch(batch_id=_sel_batch_id)
+            if _batch_df is not None:
+                _dl_at = _batch_df["_downloaded_at"].iloc[0]
+                _dl_date = _dl_at.strftime("%m/%d %H:%M") if hasattr(_dl_at, "strftime") else str(_dl_at)[:16]
+                st.info(f"선택된 배치: {_dl_date} ({len(_batch_df)}건)")
         else:
             st.caption("DB 배치 없음 — 이름 매칭(fallback) 사용")
 
