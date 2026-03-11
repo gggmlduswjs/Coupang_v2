@@ -1364,6 +1364,59 @@ def _render_delivery_list(instruct_all, accounts_df=None):
         # 세션에 저장 (송장 매칭용)
         st.session_state["_delivery_list_df"] = _dl_df.copy()
 
+        # ── 배송리스트 DB 기록 (엑셀 생성 시점에 바로 저장) ──
+        _dl_batch_key = "_dl_batch_saved_boxes"
+        _dl_box_set = set(int(b) for b in _dl_df["묶음배송번호"].unique())
+        if st.session_state.get(_dl_batch_key) != _dl_box_set:
+            try:
+                from uuid import uuid4
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                from dashboard.utils import engine as _eng
+
+                _batch_id = str(uuid4())
+                _seen_boxes = {}
+                _box_seq = 0
+                for _, _r in _dl_df.iterrows():
+                    _box_id = int(_r["묶음배송번호"])
+                    if _box_id not in _seen_boxes:
+                        _box_seq += 1
+                        _seen_boxes[_box_id] = {
+                            "shipment_box_id": _box_id,
+                            "account_id": int(_r["_account_id"]),
+                            "order_id": int(_r.get("주문번호", 0) or 0),
+                            "vendor_item_id": int(_r.get("_vendor_item_id", 0) or 0),
+                            "receiver_name": str(_r.get("수취인이름", "")).strip(),
+                            "buyer_name": str(_r.get("구매자", "")).strip(),
+                            "seq_no": _box_seq,
+                            "batch_id": _batch_id,
+                        }
+
+                with _eng.connect() as _conn:
+                    for _vals in _seen_boxes.values():
+                        _stmt = pg_insert(DeliveryListLog.__table__).values(**_vals)
+                        _stmt = _stmt.on_conflict_do_update(
+                            index_elements=["shipment_box_id"],
+                            set_={
+                                "account_id": _vals["account_id"],
+                                "order_id": _vals["order_id"],
+                                "vendor_item_id": _vals["vendor_item_id"],
+                                "receiver_name": _vals["receiver_name"],
+                                "buyer_name": _vals["buyer_name"],
+                                "seq_no": _vals["seq_no"],
+                                "batch_id": _batch_id,
+                                "downloaded_at": datetime.utcnow(),
+                                "registered": False,
+                            },
+                        )
+                        _conn.execute(_stmt)
+                    _conn.commit()
+                st.session_state["_last_batch_id"] = _batch_id
+                st.session_state[_dl_batch_key] = _dl_box_set
+                logger.info(f"배송리스트 {len(_seen_boxes)}건 DB 기록 완료 (batch={_batch_id[:8]})")
+            except Exception as e:
+                logger.error(f"배송리스트 DB 기록 실패: {e}")
+                st.error(f"배송리스트 DB 기록 실패: {e}")
+
         # ── 동일 수취인 합배송 방지 안내 ──
         _recv_groups = _dl_df.groupby("수취인이름")["묶음배송번호"].apply(
             lambda x: list(x.unique())
@@ -1432,53 +1485,7 @@ def _render_delivery_list(instruct_all, accounts_df=None):
         type="primary",
         use_container_width=True,
     ):
-        # 다운로드 클릭 시 DB에 기록 (UPSERT)
-        try:
-            from uuid import uuid4
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
-            from dashboard.utils import engine as _eng
-
-            _batch_id = str(uuid4())
-            _seen_boxes = {}
-            _box_seq = 0
-            for _, _r in _dl_df.iterrows():
-                _box_id = int(_r["묶음배송번호"])
-                if _box_id not in _seen_boxes:
-                    _box_seq += 1
-                    _seen_boxes[_box_id] = {
-                        "shipment_box_id": _box_id,
-                        "account_id": int(_r["_account_id"]),
-                        "order_id": int(_r.get("주문번호", 0) or 0),
-                        "vendor_item_id": int(_r.get("_vendor_item_id", 0) or 0),
-                        "receiver_name": str(_r.get("수취인이름", "")).strip(),
-                        "buyer_name": str(_r.get("구매자", "")).strip(),
-                        "seq_no": _box_seq,
-                        "batch_id": _batch_id,
-                    }
-
-            with _eng.connect() as _conn:
-                for _vals in _seen_boxes.values():
-                    _stmt = pg_insert(DeliveryListLog.__table__).values(**_vals)
-                    _stmt = _stmt.on_conflict_do_update(
-                        index_elements=["shipment_box_id"],
-                        set_={
-                            "account_id": _vals["account_id"],
-                            "order_id": _vals["order_id"],
-                            "vendor_item_id": _vals["vendor_item_id"],
-                            "receiver_name": _vals["receiver_name"],
-                            "buyer_name": _vals["buyer_name"],
-                            "seq_no": _vals["seq_no"],
-                            "batch_id": _batch_id,
-                            "downloaded_at": datetime.utcnow(),
-                        },
-                    )
-                    _conn.execute(_stmt)
-                _conn.commit()
-            st.session_state["_last_batch_id"] = _batch_id
-            st.session_state["_step_delivery_list"] = True
-            st.toast(f"배송리스트 {len(_seen_boxes)}건 DB 기록 완료", icon="✅")
-        except Exception as e:
-            logger.warning(f"배송리스트 다운로드 기록 실패: {e}")
+        st.session_state["_step_delivery_list"] = True
 
         # 발주 스냅샷 자동 저장
         try:
