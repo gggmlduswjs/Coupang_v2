@@ -802,30 +802,52 @@ def _render_order_stats(all_orders, accounts_df):
             st.caption(f"오늘 주문 {len(_po_orders_raw)}건 기준 (orders 테이블 직접 조회)")
 
     with st.expander("📦 당일 극동 출고 엑셀"):
-        _gk_today = query_df("""
-            SELECT
-                p.book_title, p.isbn, p.publisher, p.quantity,
-                b.list_price, COALESCE(b.author, '') AS author,
-                b.year AS pub_year, pub.supply_rate
-            FROM purchase_order_logs p
-            LEFT JOIN books b ON p.isbn = b.isbn AND p.isbn IS NOT NULL AND p.isbn != ''
-            LEFT JOIN publishers pub ON b.publisher_id = pub.id
-            WHERE (p.ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
-              AND p.batch_id IS NOT NULL
+        # orders 테이블에서 직접 조회 → enrich → books 정보 JOIN
+        _gk_orders_raw = query_df("""
+            SELECT DISTINCT ON (o.shipment_box_id)
+                   o.shipment_box_id AS "묶음배송번호",
+                   o.order_id AS "주문번호",
+                   o.seller_product_name AS "상품명",
+                   o.vendor_item_name AS "옵션명",
+                   o.shipping_count AS "수량",
+                   o.order_price AS "결제금액",
+                   o.account_id AS "_account_id",
+                   o.vendor_item_id AS "_vendor_item_id",
+                   o.seller_product_id AS "_seller_product_id"
+            FROM orders o
+            WHERE (o.ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
+              AND o.canceled = false
+            ORDER BY o.shipment_box_id, o.updated_at DESC
         """)
 
-        if _gk_today.empty:
-            st.info("오늘 처리된 발주 내역이 없습니다.")
+        if _gk_orders_raw.empty:
+            st.info("오늘 주문이 없습니다.")
         else:
-            _gk_po = _gk_today.copy()
-            _gk_po = _gk_po.rename(columns={
-                "book_title": "도서명", "isbn": "상품바코드",
-                "publisher": "출판사", "quantity": "수량",
-                "list_price": "정가", "author": "저자",
-                "pub_year": "출판년도", "supply_rate": "공급률",
-            })
-            _gk_po["상품바코드"] = _gk_po["상품바코드"].fillna("").astype(str)
+            _gk_enriched = _enrich_purchase_order_data(_gk_orders_raw)
+            # books 테이블에서 정가/저자/출판년도/공급률 추가
+            _gk_book_info = query_df_cached("""
+                SELECT b.isbn, b.list_price, COALESCE(b.author, '') AS author,
+                       b.year AS pub_year, pub.supply_rate
+                FROM books b
+                LEFT JOIN publishers pub ON b.publisher_id = pub.id
+                WHERE b.isbn IS NOT NULL AND b.isbn != ''
+            """)
+            _gk_book_map = {}
+            if not _gk_book_info.empty:
+                for _, _br in _gk_book_info.iterrows():
+                    _gk_book_map[str(_br["isbn"])] = {
+                        "정가": _br["list_price"],
+                        "저자": str(_br["author"]) if pd.notna(_br["author"]) else "",
+                        "출판년도": _br["pub_year"],
+                        "공급률": _br["supply_rate"],
+                    }
+            _gk_po = _gk_enriched.copy()
+            _gk_po["상품바코드"] = _gk_po["ISBN"].fillna("").astype(str)
             _gk_po["도서명"] = _gk_po["도서명"].fillna("").astype(str)
+            _gk_po["정가"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("정가"))
+            _gk_po["저자"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("저자", ""))
+            _gk_po["출판년도"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("출판년도"))
+            _gk_po["공급률"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("공급률"))
 
             _gk_key = _gk_po.apply(lambda r: r["상품바코드"] if r["상품바코드"] else r["도서명"], axis=1)
             _gk_po["_key"] = _gk_key
