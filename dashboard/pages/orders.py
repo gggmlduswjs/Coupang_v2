@@ -884,10 +884,16 @@ def _render_history_search():
             )
 
     else:  # 주문 DB
+        _search_kw = st.text_input(
+            "🔍 검색 (수취인/상품명)",
+            placeholder="김선희, 수능특강 등",
+            key="t4_search_keyword",
+        )
+
         _fc1, _fc2, _fc3 = st.columns([2, 2, 1])
         _today = date.today()
         with _fc1:
-            _date_range = st.date_input("기간", value=[_today - timedelta(days=7), _today], key="t4_date_range")
+            _date_range = st.date_input("기간", value=[_today - timedelta(days=30), _today], key="t4_date_range")
         with _fc2:
             _status_options = list(STATUS_MAP.keys())
             _status_sel = st.multiselect("상태", _status_options,
@@ -902,7 +908,13 @@ def _render_history_search():
         else:
             _start = _end = _date_range[0] if _date_range else _today
 
-        _orders_df = query_df("""
+        _params = {"start_date": str(_start), "end_date": str(_end)}
+        _where_extra = ""
+        if _search_kw and _search_kw.strip():
+            _where_extra = " AND (o.receiver_name LIKE :kw OR o.vendor_item_name LIKE :kw)"
+            _params["kw"] = f"%{_search_kw.strip()}%"
+
+        _orders_df = query_df(f"""
             SELECT
                 a.account_name AS 계정,
                 o.shipment_box_id AS 묶음배송번호,
@@ -920,9 +932,10 @@ def _render_history_search():
             JOIN accounts a ON o.account_id = a.id
             WHERE o.ordered_at >= :start_date
               AND o.ordered_at < CAST(:end_date AS date) + INTERVAL '1 day'
+              {_where_extra}
             ORDER BY o.ordered_at DESC
             LIMIT 500
-        """, {"start_date": str(_start), "end_date": str(_end)})
+        """, _params)
 
         if _orders_df.empty:
             st.info("해당 기간에 주문 데이터가 없습니다.")
