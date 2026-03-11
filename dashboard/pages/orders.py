@@ -455,6 +455,12 @@ def render(selected_account, accounts_df, account_names):
         with st.expander("반품/교환 요청 확인", expanded=False):
             _render_return_section(accounts_df)
 
+    # ══════════════════════════════════════
+    # 탭4: 📊 운영현황
+    # ══════════════════════════════════════
+    with _tab4:
+        _render_tab4(_all_orders, accounts_df)
+
 
 @st.fragment
 def _render_return_section(accounts_df):
@@ -581,11 +587,10 @@ def _render_return_section(accounts_df):
                 else:
                     st.caption("처리할 건을 선택하세요")
 
-    # ══════════════════════════════════════
-    # 탭4: 📊 운영현황 (오늘 현황 / 이력 검색)
-    # ══════════════════════════════════════
-    with _tab4:
-        _render_order_stats(_all_orders, accounts_df)
+
+def _render_tab4(all_orders, accounts_df):
+    """탭4 렌더 — fragment 밖에서 호출"""
+    _render_order_stats(all_orders, accounts_df)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
