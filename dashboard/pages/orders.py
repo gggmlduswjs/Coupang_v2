@@ -500,123 +500,82 @@ def render(selected_account, accounts_df, account_names):
                 if not _return_results:
                     st.success("오늘 반품/교환/출고중지 요청이 없습니다.")
                 else:
-                    _ru_items = [r for r in _return_results if r["유형"] == "출고중지"]
-                    _other_items = [r for r in _return_results if r["유형"] != "출고중지"]
+                    # 유형별 분리
+                    _groups = [
+                        ("RU", "출고중지", "출고중지완료", "미출고 시 처리 필요"),
+                        ("UC", "반품접수", "반품승인", "승인 시 수거 진행"),
+                        ("CC", "수거완료", "입고확인", "반품 수령 시 처리"),
+                    ]
+                    for _code, _type_label, _action_label, _desc in _groups:
+                        _items = [r for r in _return_results if r["유형"] == _type_label]
+                        if not _items:
+                            continue
 
-                    # 출고중지(RU) — 액션 가능
-                    if _ru_items:
-                        st.warning(f"출고중지 요청 {len(_ru_items)}건 — 미출고 시 '출고중지완료' 처리 필요")
-                        _ru_df = pd.DataFrame(_ru_items)
-                        st.dataframe(
-                            _ru_df[["계정", "주문번호", "상품명", "사유", "접수일시"]],
-                            hide_index=True, use_container_width=True,
-                        )
-                        # 출고중지완료 처리 버튼
-                        _ru_confirm = st.checkbox(
-                            f"출고중지 {len(_ru_items)}건을 '출고중지완료' 처리 (해당 주문 미출고 확인)",
-                            key="t3_ru_confirm",
-                        )
-                        if _ru_confirm:
-                            if st.button(f"출고중지완료 처리 ({len(_ru_items)}건)", key="t3_btn_ru_complete", type="primary"):
-                                _ru_ok = 0
-                                _ru_fail = 0
-                                for _ri in _ru_items:
-                                    _aid = _ri["_account_id"]
-                                    _rid = _ri["_receipt_id"]
-                                    _cnt = _ri["_cancel_count"]
-                                    _cl = _clients_cache.get(_aid)
-                                    if not _cl or not _rid:
-                                        _ru_fail += 1
-                                        continue
-                                    try:
-                                        _cl.stop_shipment(receipt_id=int(_rid), cancel_count=int(_cnt))
-                                        _ru_ok += 1
-                                    except Exception as e:
-                                        st.error(f"[{_ri['계정']}] 주문 {_ri['주문번호']}: {e}")
-                                        _ru_fail += 1
-                                if _ru_ok > 0:
-                                    st.toast(f"출고중지완료 {_ru_ok}건 처리", icon="✅")
-                                    st.session_state.pop("_t3_return_results", None)
-                                    st.session_state.pop("_t3_return_clients", None)
-                                    clear_order_caches()
-                                    st.rerun()
-                                if _ru_fail > 0:
-                                    st.error(f"실패 {_ru_fail}건")
+                        _color = {"RU": "warning", "UC": "warning", "CC": "info"}[_code]
+                        getattr(st, _color)(f"{_type_label} {len(_items)}건 — {_desc}")
 
-                    # 반품접수(UC) — 반품승인 가능
-                    _uc_items = [r for r in _other_items if r["유형"] == "반품접수"]
-                    if _uc_items:
-                        st.warning(f"반품접수 {len(_uc_items)}건 — '반품승인' 처리 시 수거 진행")
-                        _uc_df = pd.DataFrame(_uc_items)
-                        st.dataframe(
-                            _uc_df[["계정", "주문번호", "상품명", "사유", "접수일시"]],
+                        # 체크박스 컬럼 추가한 편집 가능 테이블
+                        _edit_df = pd.DataFrame(_items)
+                        _edit_df.insert(0, "선택", False)
+                        _show_cols = ["선택", "계정", "주문번호", "상품명", "사유", "접수일시"]
+                        _edited = st.data_editor(
+                            _edit_df[_show_cols],
                             hide_index=True, use_container_width=True,
+                            column_config={
+                                "선택": st.column_config.CheckboxColumn("선택", default=False),
+                                "상품명": st.column_config.TextColumn(width="medium"),
+                            },
+                            disabled=["계정", "주문번호", "상품명", "사유", "접수일시"],
+                            key=f"t3_edit_{_code}",
                         )
-                        _uc_confirm = st.checkbox(
-                            f"반품 {len(_uc_items)}건 승인 (수거 택배 발송됨)",
-                            key="t3_uc_confirm",
-                        )
-                        if _uc_confirm:
-                            if st.button(f"반품승인 ({len(_uc_items)}건)", key="t3_btn_uc_approve", type="primary"):
-                                _uc_ok = 0
-                                _uc_fail = 0
-                                for _ri in _uc_items:
+
+                        _sel_mask = _edited["선택"].tolist()
+                        _sel_items = [_items[i] for i, checked in enumerate(_sel_mask) if checked]
+                        _sel_count = len(_sel_items)
+
+                        if _sel_count > 0:
+                            if st.button(
+                                f"{_action_label} ({_sel_count}건)",
+                                key=f"t3_btn_{_code}_action",
+                                type="primary",
+                            ):
+                                _ok = 0
+                                _fail = 0
+                                for _ri in _sel_items:
                                     _cl = _clients_cache.get(_ri["_account_id"])
                                     if not _cl or not _ri["_receipt_id"]:
-                                        _uc_fail += 1
+                                        _fail += 1
                                         continue
                                     try:
-                                        _cl.approve_return_request(
-                                            receipt_id=int(_ri["_receipt_id"]),
-                                            cancel_count=int(_ri["_cancel_count"]),
-                                        )
-                                        _uc_ok += 1
+                                        if _code == "RU":
+                                            _cl.stop_shipment(
+                                                receipt_id=int(_ri["_receipt_id"]),
+                                                cancel_count=int(_ri["_cancel_count"]),
+                                            )
+                                        elif _code == "UC":
+                                            _cl.approve_return_request(
+                                                receipt_id=int(_ri["_receipt_id"]),
+                                                cancel_count=int(_ri["_cancel_count"]),
+                                            )
+                                        elif _code == "CC":
+                                            _cl.confirm_return_receipt(
+                                                receipt_id=int(_ri["_receipt_id"]),
+                                            )
+                                        _ok += 1
                                     except Exception as e:
                                         st.error(f"[{_ri['계정']}] 주문 {_ri['주문번호']}: {e}")
-                                        _uc_fail += 1
-                                if _uc_ok > 0:
-                                    st.toast(f"반품승인 {_uc_ok}건 완료", icon="✅")
+                                        _fail += 1
+                                if _ok > 0:
+                                    st.toast(f"{_action_label} {_ok}건 완료", icon="✅")
                                     st.session_state.pop("_t3_return_results", None)
                                     st.session_state.pop("_t3_return_clients", None)
+                                    if _code == "RU":
+                                        clear_order_caches()
                                     st.rerun()
-                                if _uc_fail > 0:
-                                    st.error(f"실패 {_uc_fail}건")
-
-                    # 수거완료(CC) — 입고확인 가능
-                    _cc_items = [r for r in _other_items if r["유형"] == "수거완료"]
-                    if _cc_items:
-                        st.info(f"수거완료 {len(_cc_items)}건 — 반품 수령 시 '입고확인' 처리")
-                        _cc_df = pd.DataFrame(_cc_items)
-                        st.dataframe(
-                            _cc_df[["계정", "주문번호", "상품명", "사유", "접수일시"]],
-                            hide_index=True, use_container_width=True,
-                        )
-                        _cc_confirm = st.checkbox(
-                            f"입고확인 {len(_cc_items)}건 (반품 물건 수령 완료)",
-                            key="t3_cc_confirm",
-                        )
-                        if _cc_confirm:
-                            if st.button(f"입고확인 ({len(_cc_items)}건)", key="t3_btn_cc_confirm", type="primary"):
-                                _cc_ok = 0
-                                _cc_fail = 0
-                                for _ri in _cc_items:
-                                    _cl = _clients_cache.get(_ri["_account_id"])
-                                    if not _cl or not _ri["_receipt_id"]:
-                                        _cc_fail += 1
-                                        continue
-                                    try:
-                                        _cl.confirm_return_receipt(receipt_id=int(_ri["_receipt_id"]))
-                                        _cc_ok += 1
-                                    except Exception as e:
-                                        st.error(f"[{_ri['계정']}] 주문 {_ri['주문번호']}: {e}")
-                                        _cc_fail += 1
-                                if _cc_ok > 0:
-                                    st.toast(f"입고확인 {_cc_ok}건 완료", icon="✅")
-                                    st.session_state.pop("_t3_return_results", None)
-                                    st.session_state.pop("_t3_return_clients", None)
-                                    st.rerun()
-                                if _cc_fail > 0:
-                                    st.error(f"실패 {_cc_fail}건")
+                                if _fail > 0:
+                                    st.error(f"실패 {_fail}건")
+                        else:
+                            st.caption(f"처리할 건을 선택하세요")
 
     # ══════════════════════════════════════
     # 탭4: 📊 운영현황 (오늘 현황 / 이력 검색)
