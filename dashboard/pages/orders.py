@@ -289,51 +289,6 @@ def render(selected_account, accounts_df, account_names):
             _inst_total = len(_inst_by_box)
             _inst_amount = int(_inst_by_box["결제금액"].sum()) if not _inst_by_box.empty else 0
 
-            # ── Stepper 헤더 ──
-            _step_done = {
-                "dl": st.session_state.get("_step_delivery_list", False),
-                "hj": st.session_state.get("_step_hanjin", False),
-                "inv": st.session_state.get("_step_invoice", False),
-            }
-
-            # 현재 활성 단계 결정
-            if not _step_done["dl"]:
-                _auto_step = 0
-            elif not _step_done["hj"]:
-                _auto_step = 1
-            elif not _step_done["inv"]:
-                _auto_step = 2
-            else:
-                _auto_step = 2  # 모두 완료 시 마지막 단계
-
-            _current_step = st.session_state.get("_t2_current_step", _auto_step)
-
-            _step_labels = [
-                ("dl", "① 다운로드"),
-                ("hj", "② 한진"),
-                ("inv", "③ 송장등록"),
-            ]
-
-            # Stepper 바
-            _sc = st.columns(len(_step_labels))
-            for _i, (_col, (_skey, _slabel)) in enumerate(zip(_sc, _step_labels)):
-                _done = _step_done[_skey]
-                _active = (_i == _current_step)
-                if _done:
-                    _prefix = "✅"
-                elif _active:
-                    _prefix = "▶"
-                else:
-                    _prefix = "⬜"
-                if _col.button(
-                    f"{_prefix} {_slabel}",
-                    key=f"t2_step_btn_{_i}",
-                    use_container_width=True,
-                    type="primary" if _active else "secondary",
-                ):
-                    st.session_state["_t2_current_step"] = _i
-                    st.rerun()
-
             st.caption(f"상품준비중 {_inst_total:,}건 · ₩{fmt_krw_short(_inst_amount)}")
 
             # 주문 그리드 — 접힌 상태로 제공 (항상 전체 선택이 기본)
@@ -381,37 +336,18 @@ def render(selected_account, accounts_df, account_names):
             else:
                 _t2_filtered = _instruct_all.copy()
 
+            # ── ① 배송리스트 다운로드 ──
             st.divider()
+            _render_delivery_list(_t2_filtered, accounts_df)
+            _render_purchase_order(_t2_filtered, accounts_df, key_prefix="t2")
 
-            # ── Stepper 본문: 활성 단계만 렌더 ──
-            if _current_step == 0:
-                # ── ① 다운로드 단계 ──
-                _render_delivery_list(_t2_filtered, accounts_df)
-                # 발주서 (접힌 상태)
-                _render_purchase_order(_t2_filtered, accounts_df, key_prefix="t2")
+            # ── ② 한진 출력자료등록 ──
+            st.divider()
+            _render_hanjin_nfocus()
 
-            elif _current_step == 1:
-                # ── ② 한진 단계 ──
-                _render_hanjin_nfocus()
-
-                # 이전 단계 요약
-                if _step_done["dl"]:
-                    _last_bid = st.session_state.get("_last_batch_id")
-                    if _last_bid:
-                        _dl_cnt = query_df(
-                            "SELECT COUNT(*) AS cnt FROM delivery_list_logs WHERE batch_id = :bid",
-                            {"bid": _last_bid},
-                        )
-                        _cnt = int(_dl_cnt.iloc[0]["cnt"]) if not _dl_cnt.empty else 0
-                        st.caption(f"이전 단계: {_cnt}건 다운로드 완료")
-
-            elif _current_step == 2:
-                # ── ③ 송장등록 단계 ──
-                # 한진 미완료 시 안내
-                if not _step_done["hj"]:
-                    st.warning("② 한진 단계를 먼저 완료하세요. 한진에서 출력자료등록 엑셀을 다운로드한 후 여기서 업로드합니다.")
-
-                _render_invoice_upload(_t2_filtered, accounts_df)
+            # ── ③ 송장등록 ──
+            st.divider()
+            _render_invoice_upload(_t2_filtered, accounts_df)
 
     # ══════════════════════════════════════
     # 탭3: 배송현황 (DEPARTURE+) — 조회 전용
