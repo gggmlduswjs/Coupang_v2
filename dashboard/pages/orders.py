@@ -581,7 +581,7 @@ def _render_return_section(accounts_df):
                             st.session_state.pop("_t3_return_clients", None)
                             if _code == "RU":
                                 clear_order_caches()
-                            st.rerun()
+                            st.rerun(scope="fragment")
                         if _fail > 0:
                             st.error(f"실패 {_fail}건")
                 else:
