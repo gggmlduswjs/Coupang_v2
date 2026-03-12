@@ -12,7 +12,6 @@ from datetime import date, datetime, timedelta
 
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder
 
 from core.api.wing_client import CoupangWingError
 from core.constants import (
@@ -170,43 +169,18 @@ def render(selected_account, accounts_df, account_names):
             ]
             _grid_df = _accept_display[_display_cols].rename(columns={"수취인주소": "배송지"})
 
-            gb = GridOptionsBuilder.from_dataframe(_grid_df)
-            gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)
-            gb.configure_default_column(resizable=True, sorteable=True, filterable=True)
-            gb.configure_column("상품/옵션/수량", width=350)
-            gb.configure_column("배송지", width=250)
-            gb.configure_column("수취인/연락처", width=130)
-            gb.configure_column("주문번호", width=120)
-            gb.configure_column("묶음배송번호", width=120)
-            gb.configure_column("주문일시", width=140)
-            gb.configure_selection(
-                "multiple", use_checkbox=True,
-                header_checkbox=True,
-                pre_selected_rows=list(range(len(_grid_df))),
-            )
-            grid_opts = gb.build()
-            _grid_result = AgGrid(
-                _grid_df, gridOptions=grid_opts, height=500, theme="streamlit",
-                key="t1_accept_grid", update_mode="SELECTION_CHANGED",
+            st.dataframe(
+                _grid_df, hide_index=True, use_container_width=True, height=500,
+                column_config={
+                    "상품/옵션/수량": st.column_config.TextColumn(width="large"),
+                    "배송지": st.column_config.TextColumn(width="medium"),
+                    "묶음배송번호": st.column_config.NumberColumn(format="%d"),
+                },
             )
 
-            _selected_rows = _grid_result.get("selected_rows", None)
-            _has_selection = False
-            if _selected_rows is not None:
-                if isinstance(_selected_rows, pd.DataFrame) and not _selected_rows.empty:
-                    _selected_df = _selected_rows
-                    _has_selection = True
-                elif isinstance(_selected_rows, list) and len(_selected_rows) > 0:
-                    _selected_df = pd.DataFrame(_selected_rows)
-                    _has_selection = True
-
-            if _has_selection:
-                _sel_box_ids = _selected_df["묶음배송번호"].unique().tolist()
-                _sel_data = _accept_all[_accept_all["묶음배송번호"].isin(_sel_box_ids)].copy()
-                _sel_boxes = len(_sel_box_ids)
-            else:
-                _sel_data = _accept_all.copy()
-                _sel_boxes = _accept_total
+            # 전체 선택 (기본)
+            _sel_data = _accept_all.copy()
+            _sel_boxes = _accept_total
 
             # ── 발주확인 액션바 ──
             _ab1, _ab2 = st.columns([3, 1])
@@ -298,43 +272,15 @@ def render(selected_account, accounts_df, account_names):
                 _grid_cols = ["계정", "묶음배송번호", "주문번호", "상품명", "수량", "결제금액_표시", "주문일", "수취인"]
                 _inst_grid_df = _inst_display[_grid_cols].rename(columns={"결제금액_표시": "결제금액"})
 
-                gb_inst = GridOptionsBuilder.from_dataframe(_inst_grid_df)
-                gb_inst.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20)
-                gb_inst.configure_default_column(resizable=True, sorteable=True, filterable=True)
-                gb_inst.configure_column("상품명", width=350)
-                gb_inst.configure_selection(
-                    "multiple", use_checkbox=True,
-                    header_checkbox=True,
-                    pre_selected_rows=list(range(len(_inst_grid_df))),
-                )
-                _inst_grid_result = AgGrid(
-                    _inst_grid_df, gridOptions=gb_inst.build(), height=400, theme="streamlit",
-                    key="t2_instruct_grid", update_mode="SELECTION_CHANGED",
+                st.dataframe(
+                    _inst_grid_df, hide_index=True, use_container_width=True, height=400,
+                    column_config={
+                        "상품명": st.column_config.TextColumn(width="large"),
+                        "묶음배송번호": st.column_config.NumberColumn(format="%d"),
+                    },
                 )
 
-                _t2_selected_rows = _inst_grid_result.get("selected_rows", None)
-                _t2_has_sel = False
-                if _t2_selected_rows is not None:
-                    if isinstance(_t2_selected_rows, pd.DataFrame) and not _t2_selected_rows.empty:
-                        _t2_sel_df = _t2_selected_rows
-                        _t2_has_sel = True
-                    elif isinstance(_t2_selected_rows, list) and len(_t2_selected_rows) > 0:
-                        _t2_sel_df = pd.DataFrame(_t2_selected_rows)
-                        _t2_has_sel = True
-
-                if _t2_has_sel:
-                    _sel_box_ids = _t2_sel_df["묶음배송번호"].unique().tolist()
-                    st.session_state["_t2_sel_box_ids"] = _sel_box_ids
-                    st.caption(f"선택: {len(_t2_sel_df)}건 ({len(_sel_box_ids)}묶음) — 체크 해제한 주문은 엑셀/송장에서 제외")
-                else:
-                    st.session_state.pop("_t2_sel_box_ids", None)
-
-            # 선택 필터 적용
-            _t2_sel_ids = st.session_state.get("_t2_sel_box_ids")
-            if _t2_sel_ids:
-                _t2_filtered = _instruct_all[_instruct_all["묶음배송번호"].isin(_t2_sel_ids)].copy()
-            else:
-                _t2_filtered = _instruct_all.copy()
+            _t2_filtered = _instruct_all.copy()
 
             # ── ① 배송리스트 다운로드 ──
             st.divider()
@@ -1452,12 +1398,13 @@ def _render_purchase_order(instruct_all, accounts_df, key_prefix="t2"):
             _filtered_agg = _agg[_agg["거래처"].isin(_dist_filter)] if _dist_filter else _agg
             _show_agg = _filtered_agg[["거래처", "ISBN", "출판사", "도서명", "주문수량"]].copy()
 
-            gb2 = GridOptionsBuilder.from_dataframe(_show_agg)
-            gb2.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20)
-            gb2.configure_default_column(resizable=True, sorteable=True, filterable=True)
-            gb2.configure_column("도서명", width=350)
-            gb2.configure_column("주문수량", width=80)
-            AgGrid(_show_agg, gridOptions=gb2.build(), height=500, theme="streamlit", key=f"{key_prefix}_dist_grid")
+            st.dataframe(
+                _show_agg, hide_index=True, use_container_width=True, height=500,
+                column_config={
+                    "도서명": st.column_config.TextColumn(width="large"),
+                    "주문수량": st.column_config.NumberColumn(format="%d권"),
+                },
+            )
 
 
 
