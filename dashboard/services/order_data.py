@@ -262,36 +262,73 @@ def sync_live_orders(accounts_df):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def _build_receiver_suffix_map(orders_df):
-    """동일 수취인+주소가 서로 다른 묶음배송번호에 있으면 구분자 부여.
+def _get_recent_delivery_receiver_names():
+    """최근 24시간 내 다운로드된 배송리스트의 수취인이름 → [묶음배송번호] 맵 반환.
 
-    한진이 같은 이름+주소+전화번호를 합배송하는 것을 방지하기 위해
-    이름과 주소 모두에 구분자를 부여한다.
-    (전화번호는 배송 연락용이므로 변경하지 않음)
+    한진 N-Focus는 이름만 같아도 합배송할 수 있으므로 (주소가 달라도),
+    등록 여부(registered)와 관계없이 최근 다운로드 건 전체를 확인한다.
+    """
+    from sqlalchemy import text
+    from core.database import engine
+
+    name_to_boxes = {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT d.shipment_box_id, o.receiver_name
+                FROM delivery_list_logs d
+                JOIN orders o ON d.shipment_box_id = o.shipment_box_id
+                WHERE d.downloaded_at >= NOW() - INTERVAL '24 hours'
+            """)).fetchall()
+            for r in rows:
+                name = (r[1] or "").strip()
+                box_id = int(r[0])
+                if name not in name_to_boxes:
+                    name_to_boxes[name] = []
+                if box_id not in name_to_boxes[name]:
+                    name_to_boxes[name].append(box_id)
+    except Exception:
+        pass  # DB 접근 실패 시 기존 로직(현재 배치만)으로 동작
+    return name_to_boxes
+
+
+def _build_receiver_suffix_map(orders_df):
+    """동일 수취인이름이 서로 다른 묶음배송번호에 있으면 구분자 부여.
+
+    한진은 이름만 같아도 합배송할 수 있으므로 (주소/전화번호가 달라도),
+    이름과 주소 모두에 구분자를 부여하여 한진 합포장을 방지한다.
+
+    최근 24시간 내 다운로드된 이전 배치의 주문도 함께 고려하여,
+    배치 간(cross-batch) 동일 수취인 합배송을 방지한다.
 
     Returns:
         dict: {묶음배송번호: {"name": str, "addr": str}}
-              첫 번째 건은 name="", addr="" (변경 없음)
     """
-    key_to_boxes = {}  # (수취인, 주소) → [묶음배송번호, ...]
+    # 1) 최근 24시간 내 다운로드된 배송리스트 주문 로드 (배치 간 합배송 방지)
+    name_to_boxes = _get_recent_delivery_receiver_names()
+
+    # 2) 현재 배치 주문 추가
+    current_box_ids = set()
     for _, row in orders_df.iterrows():
         name = str(row.get("수취인", "")).strip()
-        addr = str(row.get("수취인주소", "")).strip()
         box_id = int(row["묶음배송번호"])
-        key = (name, addr)
-        if key not in key_to_boxes:
-            key_to_boxes[key] = []
-        if box_id not in key_to_boxes[key]:
-            key_to_boxes[key].append(box_id)
+        current_box_ids.add(box_id)
+        if name not in name_to_boxes:
+            name_to_boxes[name] = []
+        if box_id not in name_to_boxes[name]:
+            name_to_boxes[name].append(box_id)
 
     suffix_map = {}  # 묶음배송번호 → {"name": suffix, "addr": suffix}
-    for (name, addr), box_ids in key_to_boxes.items():
+    for name, box_ids in name_to_boxes.items():
         if len(box_ids) <= 1:
             continue
         # 모든 건에 구분자 부여 — 첫 번째도 (1)로 표시하여 한진 합포장 방지
         for i, box_id in enumerate(box_ids):
-            tag = f" ({i + 1})"
-            suffix_map[box_id] = {"name": tag, "addr": tag}
+            # 현재 배치에 포함된 건만 suffix_map에 추가
+            # (이전 배치 건은 이미 출력되었으므로 다시 출력하지 않음)
+            if box_id in current_box_ids:
+                tag = f" ({i + 1})"
+                suffix_map[box_id] = {"name": tag, "addr": tag}
     return suffix_map
 
 

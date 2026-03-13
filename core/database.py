@@ -98,6 +98,7 @@ def _create_engine_for_url(url: str):
             connect_args={
                 "connect_timeout": 5,
                 "options": "-c statement_timeout=30000",
+                "sslmode": "disable",
             },
         )
     else:
