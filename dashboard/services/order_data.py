@@ -194,14 +194,23 @@ def load_all_orders_live(accounts_df):
         JOIN accounts a ON o.account_id = a.id
         WHERE (o.status IN ('DEPARTURE','DELIVERING','NONE_TRACKING'))
            OR (o.status = 'FINAL_DELIVERY' AND o.ordered_at >= :date_from)
+           OR (o.status IN ('ACCEPT','INSTRUCT') AND o.ordered_at < :api_cutoff AND o.canceled = false)
         ORDER BY "주문일시" DESC
-    """, {"date_from": _from_30d})
+    """, {"date_from": _from_30d, "api_cutoff": _from})
 
-    # ── 3) 합치기 ──
+    # ── 3) 합치기 (API 우선, DB 보완 — 중복 제거) ──
+    if not api_df.empty:
+        api_df["_src"] = "api"
+    if not db_df.empty:
+        db_df["_src"] = "db"
     frames = [df for df in [api_df, db_df] if not df.empty]
     if frames:
         result = pd.concat(frames, ignore_index=True)
-        result = result.sort_values("주문일시", ascending=False).reset_index(drop=True)
+        # API 행 우선: 같은 (묶음배송번호, _vendor_item_id) 중복 시 API 유지
+        result = result.sort_values("_src").drop_duplicates(
+            subset=["묶음배송번호", "_vendor_item_id"], keep="first"
+        )
+        result = result.drop(columns=["_src"]).sort_values("주문일시", ascending=False).reset_index(drop=True)
     else:
         result = pd.DataFrame()
 
@@ -263,10 +272,11 @@ def sync_live_orders(accounts_df):
 
 
 def _get_recent_delivery_receiver_names():
-    """최근 24시간 내 다운로드된 배송리스트의 수취인이름 → [묶음배송번호] 맵 반환.
+    """미등록 배송리스트 + 최근 3일 등록 건의 수취인이름 → [묶음배송번호] 맵 반환.
 
     한진 N-Focus는 이름만 같아도 합배송할 수 있으므로 (주소가 달라도),
-    등록 여부(registered)와 관계없이 최근 다운로드 건 전체를 확인한다.
+    미등록(아직 한진에 올라가있는) 건은 시간 무관하게 전부 체크하고,
+    최근 등록 완료 건도 3일간 체크하여 합배송을 방지한다.
     """
     from sqlalchemy import text
     from core.database import engine
@@ -278,7 +288,8 @@ def _get_recent_delivery_receiver_names():
                 SELECT d.shipment_box_id, o.receiver_name
                 FROM delivery_list_logs d
                 JOIN orders o ON d.shipment_box_id = o.shipment_box_id
-                WHERE d.downloaded_at >= NOW() - INTERVAL '24 hours'
+                WHERE d.registered = FALSE
+                   OR d.downloaded_at >= NOW() - INTERVAL '3 days'
             """)).fetchall()
             for r in rows:
                 name = (r[1] or "").strip()
@@ -298,20 +309,20 @@ def _build_receiver_suffix_map(orders_df):
     한진은 이름만 같아도 합배송할 수 있으므로 (주소/전화번호가 달라도),
     이름과 주소 모두에 구분자를 부여하여 한진 합포장을 방지한다.
 
-    최근 24시간 내 다운로드된 이전 배치의 주문도 함께 고려하여,
+    미등록 배송리스트 전체 + 최근 3일 등록 건도 함께 고려하여,
     배치 간(cross-batch) 동일 수취인 합배송을 방지한다.
 
     Returns:
         dict: {묶음배송번호: {"name": str, "addr": str}}
     """
-    # 1) 최근 24시간 내 다운로드된 배송리스트 주문 로드 (배치 간 합배송 방지)
+    # 1) 미등록 + 최근 3일 등록 건 로드 (배치 간 합배송 방지)
     name_to_boxes = _get_recent_delivery_receiver_names()
 
     # 2) 현재 배치 주문 추가
     current_box_ids = set()
-    for _, row in orders_df.iterrows():
-        name = str(row.get("수취인", "")).strip()
-        box_id = int(row["묶음배송번호"])
+    _names = orders_df.get("수취인", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+    _boxes = orders_df["묶음배송번호"].astype(int)
+    for name, box_id in zip(_names, _boxes):
         current_box_ids.add(box_id)
         if name not in name_to_boxes:
             name_to_boxes[name] = []

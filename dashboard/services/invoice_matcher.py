@@ -9,10 +9,8 @@ import logging
 from typing import Optional
 
 import pandas as pd
-from sqlalchemy import desc, text as sa_text
+from sqlalchemy import text as sa_text
 
-from core.database import SessionLocal
-from core.models.delivery_log import DeliveryListLog
 from dashboard.utils import engine
 
 logger = logging.getLogger(__name__)
@@ -29,21 +27,18 @@ def list_batches(limit: int = 20) -> Optional[pd.DataFrame]:
     Returns:
         DataFrame with columns: batch_id, downloaded_at, count  /  None if empty.
     """
-    db = SessionLocal()
     try:
-        from sqlalchemy import func
-        results = (
-            db.query(
-                DeliveryListLog.batch_id,
-                func.min(DeliveryListLog.downloaded_at).label("downloaded_at"),
-                func.count().label("count"),
-            )
-            .filter(DeliveryListLog.batch_id.isnot(None))
-            .group_by(DeliveryListLog.batch_id)
-            .order_by(desc(func.min(DeliveryListLog.downloaded_at)))
-            .limit(limit)
-            .all()
-        )
+        with engine.connect() as conn:
+            results = conn.execute(sa_text("""
+                SELECT batch_id,
+                       MIN(downloaded_at) AS downloaded_at,
+                       COUNT(*) AS count
+                FROM delivery_list_logs
+                WHERE batch_id IS NOT NULL
+                GROUP BY batch_id
+                ORDER BY MIN(downloaded_at) DESC
+                LIMIT :lim
+            """), {"lim": limit}).fetchall()
         if not results:
             return None
         rows = [{"batch_id": r[0], "downloaded_at": r[1], "count": r[2]} for r in results]
@@ -51,8 +46,6 @@ def list_batches(limit: int = 20) -> Optional[pd.DataFrame]:
     except Exception as e:
         logger.warning(f"배치 목록 조회 실패: {e}")
         return None
-    finally:
-        db.close()
 
 
 def load_latest_batch(batch_id: Optional[str] = None) -> Optional[pd.DataFrame]:
@@ -65,45 +58,51 @@ def load_latest_batch(batch_id: Optional[str] = None) -> Optional[pd.DataFrame]:
         DataFrame with columns: 번호, 묶음배송번호, 주문번호, 수취인이름,
         구매자, _account_id, _vendor_item_id  /  None if empty.
     """
-    db = SessionLocal()
     try:
-        if batch_id is None:
-            latest = db.query(DeliveryListLog.batch_id).filter(
-                DeliveryListLog.batch_id.isnot(None),
-            ).order_by(desc(DeliveryListLog.downloaded_at)).first()
+        with engine.connect() as conn:
+            if batch_id is None:
+                row = conn.execute(sa_text("""
+                    SELECT batch_id FROM delivery_list_logs
+                    WHERE batch_id IS NOT NULL
+                    ORDER BY downloaded_at DESC
+                    LIMIT 1
+                """)).fetchone()
+                if not row or not row[0]:
+                    return None
+                batch_id = row[0]
 
-            if not latest or not latest[0]:
-                return None
-            batch_id = latest[0]
+            results = conn.execute(sa_text("""
+                SELECT seq_no, shipment_box_id, order_id,
+                       receiver_name, buyer_name,
+                       account_id, vendor_item_id,
+                       downloaded_at, COALESCE(registered, false) AS registered
+                FROM delivery_list_logs
+                WHERE batch_id = :bid
+                ORDER BY seq_no
+            """), {"bid": batch_id}).fetchall()
 
-        logs = db.query(DeliveryListLog).filter(
-            DeliveryListLog.batch_id == batch_id,
-        ).order_by(DeliveryListLog.seq_no).all()
-
-        if not logs:
+        if not results:
             return None
 
         rows = []
-        for log in logs:
+        for r in results:
             rows.append({
-                "번호": log.seq_no or 0,
-                "묶음배송번호": log.shipment_box_id,
-                "주문번호": log.order_id or 0,
-                "수취인이름": log.receiver_name or "",
-                "구매자": log.buyer_name or "",
-                "_account_id": log.account_id,
-                "_vendor_item_id": log.vendor_item_id or 0,
+                "번호": r[0] or 0,
+                "묶음배송번호": r[1],
+                "주문번호": r[2] or 0,
+                "수취인이름": r[3] or "",
+                "구매자": r[4] or "",
+                "_account_id": r[5],
+                "_vendor_item_id": r[6] or 0,
                 "_batch_id": batch_id,
-                "_downloaded_at": log.downloaded_at,
-                "_registered": getattr(log, "registered", False) or False,
+                "_downloaded_at": r[7],
+                "_registered": r[8] or False,
             })
 
         return pd.DataFrame(rows)
     except Exception as e:
         logger.warning(f"배치 로드 실패: {e}")
         return None
-    finally:
-        db.close()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -161,10 +160,24 @@ def _match_by_sequence(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Optio
 
 
 def _match_by_row_order(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """전략2: 한진 원본List — 행 수 일치 시 위치 기반 매칭."""
+    """전략2: 한진 원본List — 행 수 일치 시 위치 기반 매칭 + 수취인 교차검증."""
     hj = hanjin_df[hanjin_df["운송장번호"].notna() & (hanjin_df["운송장번호"] != "")].copy()
     if hj.empty or len(hj) != len(batch_df):
         return None
+
+    # 수취인 교차검증: 한진 엑셀에 수취인 컬럼이 있으면 불일치율 체크
+    recv_col = _find_recv_col(hj)
+    if recv_col and "수취인이름" in batch_df.columns:
+        mismatch = 0
+        for i in range(len(hj)):
+            hj_name = _strip_receiver_suffix(str(hj.iloc[i][recv_col]).strip())
+            dl_name = _strip_receiver_suffix(str(batch_df.iloc[i]["수취인이름"]).strip())
+            if hj_name and dl_name and hj_name != dl_name:
+                mismatch += 1
+        mismatch_rate = mismatch / len(hj) if len(hj) > 0 else 0
+        if mismatch_rate > 0.2:
+            logger.warning(f"행순서매칭 수취인 불일치율 {mismatch_rate:.0%} ({mismatch}/{len(hj)}) — 매칭 거부")
+            return None
 
     results = []
     for i in range(len(hj)):
@@ -243,7 +256,12 @@ def _match_by_name(hanjin_df: pd.DataFrame, recv_col: str) -> Optional[pd.DataFr
         if candidates.empty:
             continue
 
-        first = candidates.iloc[0]
+        # 동명이인 방지: INSTRUCT 상태 우선, 같은 이름 여러 계정이면 주문 1개씩만 매칭
+        candidates = candidates.drop_duplicates(subset=["묶음배송번호"], keep="first")
+        # 계정별로 분산 — 같은 이름이 여러 계정에 있으면 아직 미사용 계정 우선
+        _used_accts = {r.get("_account_id") for r in results} if results else set()
+        _new_acct = candidates[~candidates["_account_id"].isin(_used_accts)]
+        first = _new_acct.iloc[0] if not _new_acct.empty else candidates.iloc[0]
         box_id = first["묶음배송번호"]
         used_box_ids.add(box_id)
         results.append({
@@ -361,28 +379,84 @@ def check_registerable(matched_df: pd.DataFrame, instruct_df: pd.DataFrame,
 
     matched = matched_df.copy()
     matched["_box_str"] = matched["묶음배송번호"].astype(str)
+    matched["_vid_str"] = matched["_vendor_item_id"].astype(str)
 
-    # 1) 배치에서 이미 등록된 건 제외
-    already_registered_boxes = set()
+    # 1) 배치에서 이미 등록된 건 제외 — (box, vendor_item_id) 단위
+    already_registered_keys = set()
     if batch_df is not None and "_registered" in batch_df.columns:
         reg_rows = batch_df[batch_df["_registered"] == True]
-        already_registered_boxes = set(reg_rows["묶음배송번호"].astype(str))
+        if not reg_rows.empty:
+            already_registered_keys = set(
+                reg_rows["묶음배송번호"].astype(str) + "_" + reg_rows.get("_vendor_item_id", pd.Series(0)).astype(str)
+            )
 
-    # 2) INSTRUCT 주문 집합
-    current_boxes = set()
+    # 2) INSTRUCT 주문 집합 — (box, vendor_item_id) 단위
+    current_keys = set()
     if not instruct_df.empty:
-        current_boxes = set(instruct_df["묶음배송번호"].astype(str))
+        current_keys = set(
+            instruct_df["묶음배송번호"].astype(str) + "_" + instruct_df["_vendor_item_id"].astype(str)
+        )
 
-    # 분류
-    is_already_registered = matched["_box_str"].isin(already_registered_boxes)
-    is_in_instruct = matched["_box_str"].isin(current_boxes)
+    # 분류: (box, vendor_item_id) 단위로 판별 → multi-item 부분 등록 지원
+    matched["_key"] = matched["_box_str"] + "_" + matched["_vid_str"]
+    is_already_registered = matched["_key"].isin(already_registered_keys)
+    is_in_instruct = matched["_key"].isin(current_keys)
+    # box 단위 fallback: vendor_item_id가 0이면 box만으로 판별
+    is_in_instruct_box = matched["_box_str"].isin(
+        set(instruct_df["묶음배송번호"].astype(str)) if not instruct_df.empty else set()
+    )
+    is_in_instruct = is_in_instruct | (is_in_instruct_box & (matched["_vid_str"] == "0"))
     is_registerable = ~is_already_registered & is_in_instruct
 
-    registerable = matched[is_registerable].drop(columns=["_box_str"]).copy()
-    already_shipped = matched[~is_registerable].drop(columns=["_box_str"]).copy()
+    registerable = matched[is_registerable].drop(columns=["_box_str", "_vid_str", "_key"]).copy()
+    already_shipped = matched[~is_registerable].drop(columns=["_box_str", "_vid_str", "_key"]).copy()
 
     return {
         "registerable": registerable,
         "already_shipped": already_shipped,
         "summary": {"등록가능": len(registerable), "이미출고": len(already_shipped)},
     }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. check_missing_invoices
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def check_missing_invoices(
+    batch_df: pd.DataFrame,
+    matched_df: Optional[pd.DataFrame],
+) -> Optional[pd.DataFrame]:
+    """배치(배송리스트) 대비 한진 매칭 누락 건 감지.
+
+    배치에는 있지만 한진 엑셀에서 매칭되지 않은 주문 = 송장 미출력 가능성.
+
+    Args:
+        batch_df: load_latest_batch() 결과 (전체 배치)
+        matched_df: match_invoices() 결과 (한진 매칭 성공 건)
+
+    Returns:
+        누락 건 DataFrame (번호, 묶음배송번호, 주문번호, 수취인이름)  /  None if 전부 매칭됨.
+    """
+    if batch_df is None or batch_df.empty:
+        return None
+
+    batch_boxes = set(batch_df["묶음배송번호"].astype(str))
+
+    if matched_df is not None and not matched_df.empty:
+        matched_boxes = set(matched_df["묶음배송번호"].astype(str))
+    else:
+        matched_boxes = set()
+
+    missing_boxes = batch_boxes - matched_boxes
+    if not missing_boxes:
+        return None
+
+    missing = batch_df[batch_df["묶음배송번호"].astype(str).isin(missing_boxes)].copy()
+    # 이미 등록 완료된 건은 제외
+    if "_registered" in missing.columns:
+        missing = missing[missing["_registered"] != True]
+    if missing.empty:
+        return None
+
+    return missing[["번호", "묶음배송번호", "주문번호", "수취인이름"]].copy()

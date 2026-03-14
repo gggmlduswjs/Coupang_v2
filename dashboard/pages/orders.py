@@ -44,6 +44,7 @@ from dashboard.services.invoice_matcher import (
     load_latest_batch,
     match_invoices,
     check_registerable,
+    check_missing_invoices,
 )
 from core.database import SessionLocal
 from core.models.delivery_log import DeliveryListLog
@@ -347,9 +348,11 @@ def render(selected_account, accounts_df, account_names):
 @st.fragment
 def _render_return_section(accounts_df):
     """반품/교환 요청 조회 + 처리 — fragment로 격리 (체크 시 이 부분만 rerun)"""
-    if st.button("반품/교환 요청 조회 (오늘)", key="t3_btn_returns"):
+    _t3_days = st.selectbox("조회 기간", [1, 3, 7], index=0,
+                            format_func=lambda d: f"최근 {d}일", key="t3_return_days")
+    if st.button("반품/교환 요청 조회", key="t3_btn_returns"):
         _return_results = []
-        _t3_from = date.today().isoformat()
+        _t3_from = (date.today() - timedelta(days=_t3_days - 1)).isoformat()
         _t3_to = date.today().isoformat()
         _checked_aids = set()
         _aid_list = accounts_df["id"].tolist()
@@ -480,12 +483,8 @@ def _render_tab4(all_orders, accounts_df):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def _render_order_stats(all_orders, accounts_df):
-    """탭4: 운영 현황 — 단일 스크롤 페이지 (검색 → KPI → 대기주문 → 배치요약 → 다운로드 → 이력)"""
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Section 0: 빠른 검색 (최상단)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _render_quick_search(all_orders):
+    """탭4: 빠른 검색 (최상단)"""
     _sc1, _sc2 = st.columns([4, 1])
     with _sc1:
         _search_q = st.text_input(
@@ -499,67 +498,75 @@ def _render_order_stats(all_orders, accounts_df):
             key="t4_search_days", label_visibility="collapsed",
         )
 
-    if _search_q and _search_q.strip():
-        _q = _search_q.strip()
-        _results_frames = []
+    if not (_search_q and _search_q.strip()):
+        return
 
-        # 1) API 실시간 데이터 (all_orders) 인메모리 필터
-        if not all_orders.empty:
-            _mask = (
-                all_orders["수취인"].str.contains(_q, case=False, na=False)
-                | all_orders["상품명"].str.contains(_q, case=False, na=False)
-                | all_orders["옵션명"].str.contains(_q, case=False, na=False)
-            )
-            _api_hits = all_orders[_mask].copy()
-            if not _api_hits.empty:
-                _api_hits["_source"] = "API"
-                _results_frames.append(_api_hits)
+    _q = _search_q.strip()
+    _results_frames = []
 
-        # 2) DB 과거 데이터 (FINAL_DELIVERY 등)
-        _db_hits = query_df("""
-            SELECT
-                a.account_name AS "계정",
-                o.receiver_name AS "수취인",
-                o.vendor_item_name AS "상품명",
-                o.shipping_count AS "수량",
-                o.status AS "상태",
-                o.invoice_number AS "운송장번호",
-                CAST(o.ordered_at + INTERVAL '9 hours' AS timestamp) AS "주문일시",
-                o.shipment_box_id AS "묶음배송번호"
-            FROM orders o
-            JOIN accounts a ON o.account_id = a.id
-            WHERE o.ordered_at >= CURRENT_DATE - :days * INTERVAL '1 day'
-              AND o.canceled = false
-              AND (o.receiver_name LIKE :kw OR o.vendor_item_name LIKE :kw)
-            ORDER BY o.ordered_at DESC
-            LIMIT 200
-        """, {"days": _search_days, "kw": f"%{_q}%"})
+    # 1) API 실시간 데이터 (all_orders) 인메모리 필터
+    if not all_orders.empty:
+        _mask = (
+            all_orders["수취인"].str.contains(_q, case=False, na=False)
+            | all_orders["상품명"].str.contains(_q, case=False, na=False)
+            | all_orders["옵션명"].str.contains(_q, case=False, na=False)
+        )
+        _api_hits = all_orders[_mask].copy()
+        if not _api_hits.empty:
+            _api_hits["_source"] = "API"
+            _results_frames.append(_api_hits)
 
-        if not _db_hits.empty:
-            _db_hits["_source"] = "DB"
-            _results_frames.append(_db_hits)
+    # 2) DB 과거 데이터 (FINAL_DELIVERY 등)
+    _db_hits = query_df("""
+        SELECT
+            a.account_name AS "계정",
+            o.receiver_name AS "수취인",
+            o.vendor_item_name AS "상품명",
+            o.shipping_count AS "수량",
+            o.status AS "상태",
+            o.invoice_number AS "운송장번호",
+            CAST(o.ordered_at + INTERVAL '9 hours' AS timestamp) AS "주문일시",
+            o.shipment_box_id AS "묶음배송번호"
+        FROM orders o
+        JOIN accounts a ON o.account_id = a.id
+        WHERE o.ordered_at >= CURRENT_DATE - :days * INTERVAL '1 day'
+          AND o.canceled = false
+          AND (o.receiver_name LIKE :kw OR o.vendor_item_name LIKE :kw)
+        ORDER BY o.ordered_at DESC
+        LIMIT 200
+    """, {"days": _search_days, "kw": f"%{_q}%"})
 
-        if _results_frames:
-            _combined = pd.concat(_results_frames, ignore_index=True)
-            # 중복 제거 (묶음배송번호 기준, API 우선)
-            _combined["_priority"] = _combined["_source"].map({"API": 0, "DB": 1})
-            _combined = _combined.sort_values("_priority").drop_duplicates(
-                subset=["묶음배송번호"], keep="first"
-            )
-            _combined["상태(한글)"] = _combined["상태"].map(STATUS_MAP).fillna(_combined["상태"])
-            _combined["주문일시"] = pd.to_datetime(_combined["주문일시"], errors="coerce").dt.strftime("%m/%d %H:%M")
+    if not _db_hits.empty:
+        _db_hits["_source"] = "DB"
+        _results_frames.append(_db_hits)
 
-            _show_cols = ["주문일시", "계정", "수취인", "상품명", "수량", "상태(한글)", "운송장번호"]
-            _show_cols = [c for c in _show_cols if c in _combined.columns]
-            st.caption(f"검색 결과: {len(_combined)}건")
-            st.dataframe(
-                _combined[_show_cols], hide_index=True, use_container_width=True,
-                column_config={"상품명": st.column_config.TextColumn(width="large")},
-            )
-        else:
-            st.info(f"'{_q}' 검색 결과 없음 (최근 {_search_days}일)")
+    if _results_frames:
+        _combined = pd.concat(_results_frames, ignore_index=True)
+        # 중복 제거 (묶음배송번호 기준, API 우선)
+        _combined["_priority"] = _combined["_source"].map({"API": 0, "DB": 1})
+        _combined = _combined.sort_values("_priority").drop_duplicates(
+            subset=["묶음배송번호"], keep="first"
+        )
+        _combined["상태(한글)"] = _combined["상태"].map(STATUS_MAP).fillna(_combined["상태"])
+        _combined["주문일시"] = pd.to_datetime(_combined["주문일시"], errors="coerce").dt.strftime("%m/%d %H:%M")
 
-        st.divider()
+        _show_cols = ["주문일시", "계정", "수취인", "상품명", "수량", "상태(한글)", "운송장번호"]
+        _show_cols = [c for c in _show_cols if c in _combined.columns]
+        st.caption(f"검색 결과: {len(_combined)}건")
+        st.dataframe(
+            _combined[_show_cols], hide_index=True, use_container_width=True,
+            column_config={"상품명": st.column_config.TextColumn(width="large")},
+        )
+    else:
+        st.info(f"'{_q}' 검색 결과 없음 (최근 {_search_days}일)")
+
+    st.divider()
+
+
+def _render_order_stats(all_orders, accounts_df):
+    """탭4: 운영 현황 — 단일 스크롤 페이지 (검색 → KPI → 대기주문 → 배치요약 → 다운로드 → 이력)"""
+
+    _render_quick_search(all_orders)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Section 1: KPI
@@ -710,9 +717,89 @@ def _render_order_stats(all_orders, accounts_df):
 
     st.divider()
 
+    _render_tab4_downloads(all_orders, accounts_df)
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Section 4: 다운로드 (expander)
+    # Section 5: 이력 검색 (expander, collapsed)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with st.expander("📂 이력 검색", expanded=False):
+        _render_history_search()
+
+
+def _build_geukdong_data(enriched_df):
+    """enriched 주문 DataFrame → 극동 출고 agg DataFrame + 엑셀 bytes.
+
+    Returns:
+        (gk_agg, gk_bytes): 집계 DataFrame, 엑셀 bytes. enriched_df가 비어있으면 (None, None).
+    """
+    _gk_book_info = query_df_cached("""
+        SELECT b.isbn, b.list_price, COALESCE(b.author, '') AS author,
+               b.year AS pub_year, pub.supply_rate
+        FROM books b
+        LEFT JOIN publishers pub ON b.publisher_id = pub.id
+        WHERE b.isbn IS NOT NULL AND b.isbn != ''
+    """)
+    _gk_book_map = {}
+    if not _gk_book_info.empty:
+        _btmp = _gk_book_info.copy()
+        _btmp["isbn"] = _btmp["isbn"].astype(str)
+        _btmp["author"] = _btmp["author"].fillna("").astype(str)
+        _btmp = _btmp.rename(columns={"list_price": "정가", "author": "저자", "pub_year": "출판년도", "supply_rate": "공급률"})
+        _gk_book_map = _btmp.set_index("isbn")[["정가", "저자", "출판년도", "공급률"]].to_dict("index")
+
+    _gk_po = enriched_df.copy()
+    _gk_po["상품바코드"] = _gk_po["ISBN"].fillna("").astype(str)
+    _gk_po["도서명"] = _gk_po["도서명"].fillna("").astype(str)
+    _gk_po["정가"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("정가"))
+    _gk_po["저자"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("저자", ""))
+    _gk_po["출판년도"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("출판년도"))
+    _gk_po["공급률"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("공급률"))
+
+    _gk_key = _gk_po.apply(lambda r: r["상품바코드"] if r["상품바코드"] else r["도서명"], axis=1)
+    _gk_po["_key"] = _gk_key
+    _gk_agg = _gk_po.groupby("_key").agg(
+        상품바코드=("상품바코드", "first"),
+        상품명=("도서명", "first"),
+        정가=("정가", "first"),
+        수량=("수량", "sum"),
+        공급률=("공급률", "first"),
+        출판사=("출판사", "first"),
+        저자=("저자", "first"),
+        출판년도=("출판년도", "first"),
+    ).reset_index(drop=True)
+
+    if _gk_agg.empty:
+        return None, None
+
+    _gk_result = pd.DataFrame()
+    _gk_result["NO."] = range(1, len(_gk_agg) + 1)
+    _gk_result["상품바코드"] = _gk_agg["상품바코드"].values
+    _gk_result["상품명"] = _gk_agg["상품명"].values
+    _gk_result["#"] = ""
+    _gk_result["정 가"] = _gk_agg["정가"].apply(lambda x: int(x) if pd.notna(x) else 0).values
+    _gk_result["수 량"] = _gk_agg["수량"].values
+    _gk_result["%"] = _gk_agg["공급률"].apply(lambda x: f"{x*100:.0f}" if pd.notna(x) and x else "").values
+    _gk_result["단 가"] = _gk_agg.apply(
+        lambda r: int(r["정가"] * r["공급률"]) if pd.notna(r["공급률"]) and r["공급률"] and pd.notna(r["정가"]) else (int(r["정가"]) if pd.notna(r["정가"]) else 0),
+        axis=1
+    ).values
+    _gk_result["금 액"] = (_gk_result["단 가"] * _gk_result["수 량"]).values
+    _gk_result[""] = ""
+    _gk_result["출판사"] = _gk_agg["출판사"].apply(lambda x: str(x) if pd.notna(x) else "").values
+    _gk_result["저자"] = _gk_agg["저자"].apply(lambda x: str(x) if pd.notna(x) else "").values
+    _gk_result["출판년도"] = _gk_agg["출판년도"].apply(lambda x: str(int(x)) if pd.notna(x) else "").values
+
+    _gk_buf = io.BytesIO()
+    with pd.ExcelWriter(_gk_buf, engine="openpyxl") as writer:
+        _gk_result.to_excel(writer, sheet_name="극동", index=False)
+    _gk_buf.seek(0)
+
+    return _gk_agg, _gk_buf.getvalue()
+
+
+def _render_tab4_downloads(all_orders, accounts_df):
+    """탭4: 다운로드 섹션 — 발주서 + 극동 엑셀"""
+
     with st.expander("📋 발주서 (결제완료 + 상품준비중)"):
         # 실시간 ACCEPT + INSTRUCT 기준 (못나간 건 포함)
         _po_orders_raw = pd.DataFrame()
@@ -728,11 +815,12 @@ def _render_order_stats(all_orders, accounts_df):
         if _po_orders_raw.empty:
             st.info("결제완료/상품준비중 주문이 없습니다.")
         else:
-            _po_accept_cnt = int((all_orders["상태"] == "ACCEPT").sum()) if not all_orders.empty else 0
-            _po_instruct_cnt = len(_po_orders_raw) - _po_accept_cnt
+            _po_accept_mask = all_orders["상태"].eq("ACCEPT") & (~all_orders.get("취소", pd.Series(False))) if not all_orders.empty else pd.Series(dtype=bool)
+            _po_accept_cnt = int(_po_accept_mask.sum()) if len(_po_accept_mask) > 0 else 0
+            _po_instruct_cnt = max(0, len(_po_orders_raw) - _po_accept_cnt)
             st.caption(f"결제완료 {_po_accept_cnt}건 + 상품준비중 {_po_instruct_cnt}건 = 총 {len(_po_orders_raw)}건")
 
-            _po_enriched = _enrich_purchase_order_data(_po_orders_raw)
+            _po_enriched = _enrich_purchase_order_data_cached(_get_orders_hash(_po_orders_raw), _po_orders_raw)
             _po_enriched["거래처"] = _po_enriched["거래처"].fillna("미지정")
             _po_enriched["출판사"] = _po_enriched["출판사"].fillna("")
 
@@ -776,10 +864,8 @@ def _render_order_stats(all_orders, accounts_df):
             )
 
     with st.expander("📦 당일 극동 출고 엑셀"):
-        # orders 테이블에서 직접 조회 → enrich → books 정보 JOIN
         _gk_orders_raw = query_df("""
-            SELECT DISTINCT ON (o.shipment_box_id)
-                   o.shipment_box_id AS "묶음배송번호",
+            SELECT o.shipment_box_id AS "묶음배송번호",
                    o.order_id AS "주문번호",
                    o.seller_product_name AS "상품명",
                    o.vendor_item_name AS "옵션명",
@@ -791,90 +877,25 @@ def _render_order_stats(all_orders, accounts_df):
             FROM orders o
             WHERE (o.ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
               AND o.canceled = false
-            ORDER BY o.shipment_box_id, o.updated_at DESC
+            ORDER BY o.shipment_box_id, o.vendor_item_id
         """)
 
         if _gk_orders_raw.empty:
             st.info("오늘 주문이 없습니다.")
         else:
-            _gk_enriched = _enrich_purchase_order_data(_gk_orders_raw)
-            # books 테이블에서 정가/저자/출판년도/공급률 추가
-            _gk_book_info = query_df_cached("""
-                SELECT b.isbn, b.list_price, COALESCE(b.author, '') AS author,
-                       b.year AS pub_year, pub.supply_rate
-                FROM books b
-                LEFT JOIN publishers pub ON b.publisher_id = pub.id
-                WHERE b.isbn IS NOT NULL AND b.isbn != ''
-            """)
-            _gk_book_map = {}
-            if not _gk_book_info.empty:
-                for _, _br in _gk_book_info.iterrows():
-                    _gk_book_map[str(_br["isbn"])] = {
-                        "정가": _br["list_price"],
-                        "저자": str(_br["author"]) if pd.notna(_br["author"]) else "",
-                        "출판년도": _br["pub_year"],
-                        "공급률": _br["supply_rate"],
-                    }
-            _gk_po = _gk_enriched.copy()
-            _gk_po["상품바코드"] = _gk_po["ISBN"].fillna("").astype(str)
-            _gk_po["도서명"] = _gk_po["도서명"].fillna("").astype(str)
-            _gk_po["정가"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("정가"))
-            _gk_po["저자"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("저자", ""))
-            _gk_po["출판년도"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("출판년도"))
-            _gk_po["공급률"] = _gk_po["상품바코드"].map(lambda x: _gk_book_map.get(x, {}).get("공급률"))
-
-            _gk_key = _gk_po.apply(lambda r: r["상품바코드"] if r["상품바코드"] else r["도서명"], axis=1)
-            _gk_po["_key"] = _gk_key
-            _gk_agg = _gk_po.groupby("_key").agg(
-                상품바코드=("상품바코드", "first"),
-                상품명=("도서명", "first"),
-                정가=("정가", "first"),
-                수량=("수량", "sum"),
-                공급률=("공급률", "first"),
-                출판사=("출판사", "first"),
-                저자=("저자", "first"),
-                출판년도=("출판년도", "first"),
-            ).reset_index(drop=True)
-
-            _gk_show = _gk_agg[["상품바코드", "상품명", "수량", "출판사"]].copy()
-            st.dataframe(_gk_show, hide_index=True, use_container_width=True)
-
-            _gk_result = pd.DataFrame()
-            _gk_result["NO."] = range(1, len(_gk_agg) + 1)
-            _gk_result["상품바코드"] = _gk_agg["상품바코드"].values
-            _gk_result["상품명"] = _gk_agg["상품명"].values
-            _gk_result["#"] = ""
-            _gk_result["정 가"] = _gk_agg["정가"].apply(lambda x: int(x) if pd.notna(x) else 0).values
-            _gk_result["수 량"] = _gk_agg["수량"].values
-            _gk_result["%"] = _gk_agg["공급률"].apply(lambda x: f"{x*100:.0f}" if pd.notna(x) and x else "").values
-            _gk_result["단 가"] = _gk_agg.apply(
-                lambda r: int(r["정가"] * r["공급률"]) if pd.notna(r["공급률"]) and r["공급률"] and pd.notna(r["정가"]) else (int(r["정가"]) if pd.notna(r["정가"]) else 0),
-                axis=1
-            ).values
-            _gk_result["금 액"] = (_gk_result["단 가"] * _gk_result["수 량"]).values
-            _gk_result[""] = ""
-            _gk_result["출판사"] = _gk_agg["출판사"].apply(lambda x: str(x) if pd.notna(x) else "").values
-            _gk_result["저자"] = _gk_agg["저자"].apply(lambda x: str(x) if pd.notna(x) else "").values
-            _gk_result["출판년도"] = _gk_agg["출판년도"].apply(lambda x: str(int(x)) if pd.notna(x) else "").values
-
-            _gk_buf = io.BytesIO()
-            with pd.ExcelWriter(_gk_buf, engine="openpyxl") as writer:
-                _gk_result.to_excel(writer, sheet_name="극동", index=False)
-            _gk_buf.seek(0)
-
-            st.download_button(
-                f"📥 극동 다운로드 ({len(_gk_agg)}종 / {int(_gk_agg['수량'].sum())}권)",
-                _gk_buf.getvalue(),
-                file_name=f"극동_{date.today().strftime('%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="t4_gk_xlsx_dl",
-            )
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Section 5: 이력 검색 (expander, collapsed)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with st.expander("📂 이력 검색", expanded=False):
-        _render_history_search()
+            _gk_enriched = _enrich_purchase_order_data_cached(_get_orders_hash(_gk_orders_raw), _gk_orders_raw)
+            _gk_agg, _gk_bytes = _build_geukdong_data(_gk_enriched)
+            if _gk_agg is None:
+                st.info("극동 대상 데이터가 없습니다.")
+            else:
+                st.dataframe(_gk_agg[["상품바코드", "상품명", "수량", "출판사"]].copy(), hide_index=True, use_container_width=True)
+                st.download_button(
+                    f"📥 극동 다운로드 ({len(_gk_agg)}종 / {int(_gk_agg['수량'].sum())}권)",
+                    _gk_bytes,
+                    file_name=f"극동_{date.today().strftime('%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="t4_gk_xlsx_dl",
+                )
 
 
 def _render_history_search():
@@ -1178,6 +1199,23 @@ def _render_cancel_section(accounts_df, account_names, _accept_all, _instruct_li
                                         cancel_reason=_cancel_detail,
                                     )
                                     _cancel_count += len(_vids)
+                            # DB에 canceled 반영
+                            if _cancel_count > 0:
+                                try:
+                                    from dashboard.utils import engine as _c_eng
+                                    from sqlalchemy import text as _c_text
+                                    _cancel_oids = [int(x) for x in _cancelable["주문번호"].unique()]
+                                    _cancel_vids = [int(x) for x in _cancelable["옵션ID"].unique() if pd.notna(x)]
+                                    with _c_eng.connect() as _c_conn:
+                                        _c_conn.execute(_c_text("""
+                                            UPDATE orders SET canceled = TRUE, updated_at = NOW()
+                                            WHERE account_id = :aid
+                                              AND order_id = ANY(:oids)
+                                              AND vendor_item_id = ANY(:vids)
+                                        """), {"aid": _cancel_account_id, "oids": _cancel_oids, "vids": _cancel_vids})
+                                        _c_conn.commit()
+                                except Exception as _ce:
+                                    logger.warning(f"취소 DB 반영 실패: {_ce}")
                             st.toast(f"취소 요청 완료: {_cancel_count}건", icon="✅")
                             clear_order_caches()
                             st.rerun()
@@ -1185,6 +1223,23 @@ def _render_cancel_section(accounts_df, account_names, _accept_all, _instruct_li
                             st.error(f"API 오류: {e}")
                     else:
                         st.error("WING API 클라이언트를 생성할 수 없습니다.")
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _enrich_purchase_order_data_cached(_orders_hash, orders_df):
+    """enrichment 캐시 래퍼 — 동일 주문 세트에 대해 30초 캐시."""
+    return _enrich_purchase_order_data(orders_df)
+
+
+def _get_orders_hash(orders_df):
+    """주문 DataFrame의 해시 키 생성 (캐시용)."""
+    if orders_df.empty:
+        return ""
+    key_cols = ["묶음배송번호", "_vendor_item_id"]
+    existing = [c for c in key_cols if c in orders_df.columns]
+    if not existing:
+        return str(len(orders_df))
+    return orders_df[existing].to_json()
 
 
 def _enrich_purchase_order_data(orders_df):
@@ -1209,12 +1264,13 @@ def _enrich_purchase_order_data(orders_df):
     """)
     _isbn_map = {}
     if not _isbn_lookup.empty:
-        for _, _r in _isbn_lookup.iterrows():
-            _isbn_map[str(_r["coupang_product_id"])] = {
-                "isbn": str(_r["isbn"]) if pd.notna(_r["isbn"]) else "",
-                "title": str(_r["db_title"]) if pd.notna(_r["db_title"]) else "",
-                "listing_name": str(_r["listing_name"]) if pd.notna(_r["listing_name"]) else "",
-            }
+        _tmp = _isbn_lookup.copy()
+        _tmp["coupang_product_id"] = _tmp["coupang_product_id"].astype(str)
+        _tmp["isbn"] = _tmp["isbn"].fillna("").astype(str)
+        _tmp["db_title"] = _tmp["db_title"].fillna("").astype(str)
+        _tmp["listing_name"] = _tmp["listing_name"].fillna("").astype(str)
+        _tmp = _tmp.rename(columns={"db_title": "title"})
+        _isbn_map = _tmp.set_index("coupang_product_id")[["isbn", "title", "listing_name"]].to_dict("index")
 
     _TITLE_RE_PATTERNS = [
         r'\s*[-–]\s*2\d{3}\s*개정\s*교육과정.*$',
@@ -1271,9 +1327,31 @@ def _enrich_purchase_order_data(orders_df):
 
 
 def _save_purchase_order_to_db(enriched_df):
-    """enriched 주문 DataFrame을 purchase_order_logs에 저장. batch_id 반환."""
+    """enriched 주문 DataFrame을 purchase_order_logs에 저장. batch_id 반환.
+    동일 주문 세트가 이미 저장되어 있으면 스킵."""
     from uuid import uuid4
     from dashboard.utils import engine as _eng
+    from sqlalchemy import text as _po_text
+
+    # 중복 체크: 현재 주문의 shipment_box_id 세트가 최근 배치에 이미 있는지 확인
+    _current_boxes = sorted(int(x) for x in enriched_df["묶음배송번호"].unique())
+    if _current_boxes:
+        try:
+            with _eng.connect() as _conn:
+                _latest = _conn.execute(_po_text("""
+                    SELECT batch_id, ARRAY_AGG(DISTINCT shipment_box_id ORDER BY shipment_box_id) AS boxes
+                    FROM purchase_order_logs
+                    WHERE ordered_at >= NOW() - INTERVAL '1 day'
+                    GROUP BY batch_id
+                    ORDER BY MIN(ordered_at) DESC
+                    LIMIT 5
+                """)).fetchall()
+                for _row in _latest:
+                    if sorted(int(x) for x in _row[1]) == _current_boxes:
+                        logger.info(f"발주 스냅샷 중복 — 기존 batch={_row[0][:8]} 사용")
+                        return _row[0]
+        except Exception:
+            pass
 
     _batch_id = str(uuid4())
     with _eng.connect() as _conn:
@@ -1342,7 +1420,7 @@ def _render_purchase_order(instruct_all, accounts_df, key_prefix="t2"):
         if instruct_all.empty:
             st.info("발주서 대상 주문이 없습니다.")
         else:
-            _dist_orders = _enrich_purchase_order_data(instruct_all)
+            _dist_orders = _enrich_purchase_order_data_cached(_get_orders_hash(instruct_all), instruct_all)
 
             _isbn_found = _dist_orders["ISBN"].apply(lambda x: bool(x and str(x).strip())).sum()
             _isbn_missing = len(_dist_orders) - _isbn_found
@@ -1409,84 +1487,18 @@ def _render_purchase_order(instruct_all, accounts_df, key_prefix="t2"):
 
 
 def _render_geukdong_excel(instruct_all, accounts_df, key_prefix="t2"):
-    """극동 엑셀 — compact 레이아웃"""
+    """극동 엑셀 — compact 레이아웃 (공용 _build_geukdong_data 사용)"""
     with st.expander("📦 극동 엑셀", expanded=False):
         if instruct_all.empty:
             st.info("대상 주문이 없습니다.")
             return
 
-        _gk_orders = instruct_all.copy()
+        _gk_enriched = _enrich_purchase_order_data_cached(_get_orders_hash(instruct_all), instruct_all)
+        _gk_agg, _gk_bytes = _build_geukdong_data(_gk_enriched)
 
-        _gk_isbn_lookup = query_df_cached("""
-            SELECT l.coupang_product_id,
-                   l.isbn as "ISBN",
-                   b.title as "DB도서명",
-                   l.product_name as 리스팅도서명,
-                   b.list_price as 정가,
-                   COALESCE(b.author, '') as 저자,
-                   b.year as 출판년도,
-                   pub.name as 출판사,
-                   pub.supply_rate as 공급률
-            FROM listings l
-            LEFT JOIN books b ON l.isbn = b.isbn AND l.isbn IS NOT NULL AND l.isbn != ''
-            LEFT JOIN publishers pub ON b.publisher_id = pub.id
-            WHERE l.coupang_product_id IS NOT NULL
-        """)
-        _gk_map = {}
-        if not _gk_isbn_lookup.empty:
-            for _, _r in _gk_isbn_lookup.iterrows():
-                _gk_map[str(_r["coupang_product_id"])] = {
-                    "ISBN": str(_r["ISBN"]) if pd.notna(_r["ISBN"]) else "",
-                    "DB도서명": str(_r["DB도서명"]) if pd.notna(_r["DB도서명"]) else "",
-                    "리스팅도서명": str(_r["리스팅도서명"]) if pd.notna(_r["리스팅도서명"]) else "",
-                    "정가": _r["정가"] if pd.notna(_r["정가"]) else 0,
-                    "저자": str(_r["저자"]) if pd.notna(_r["저자"]) else "",
-                    "출판년도": _r["출판년도"] if pd.notna(_r["출판년도"]) else None,
-                    "출판사": str(_r["출판사"]) if pd.notna(_r["출판사"]) else "",
-                    "공급률": _r["공급률"] if pd.notna(_r["공급률"]) else None,
-                }
-
-        def _gk_enrich(row):
-            info = _gk_map.get(str(row.get("_seller_product_id", "")), {})
-            return pd.Series({
-                "ISBN": info.get("ISBN", ""),
-                "DB도서명": info.get("DB도서명", ""),
-                "리스팅도서명": info.get("리스팅도서명", ""),
-                "정가": info.get("정가", 0),
-                "저자": info.get("저자", ""),
-                "출판년도": info.get("출판년도", None),
-                "출판사": info.get("출판사", ""),
-                "공급률": info.get("공급률", None),
-            })
-
-        _gk_extra = _gk_orders.apply(_gk_enrich, axis=1)
-        _gk_orders = pd.concat([_gk_orders, _gk_extra], axis=1)
-
-        if _gk_orders.empty:
+        if _gk_agg is None:
             st.info("극동 대상 주문이 없습니다.")
             return
-
-        def _resolve_gk_title(r):
-            if pd.notna(r.get("DB도서명")) and r["DB도서명"]:
-                return str(r["DB도서명"]).strip()
-            if pd.notna(r.get("리스팅도서명")) and r["리스팅도서명"]:
-                return str(r["리스팅도서명"]).strip()
-            return str(r["옵션명"]).strip()
-
-        _gk_orders["도서명"] = _gk_orders.apply(_resolve_gk_title, axis=1)
-        _gk_orders["ISBN_clean"] = _gk_orders["ISBN"].apply(lambda x: str(x).strip() if pd.notna(x) and x else "")
-
-        _gk_orders["_key"] = _gk_orders.apply(lambda r: r["ISBN_clean"] if r["ISBN_clean"] else r["도서명"], axis=1)
-        _gk_agg = _gk_orders.groupby("_key").agg(
-            상품바코드=("ISBN_clean", "first"),
-            상품명=("도서명", "first"),
-            정가=("정가", "first"),
-            수량=("수량", "sum"),
-            공급률=("공급률", "first"),
-            출판사=("출판사", "first"),
-            저자=("저자", "first"),
-            출판년도=("출판년도", "first"),
-        ).reset_index(drop=True)
 
         _gk_total_amount = int(_gk_agg.apply(
             lambda r: (r["정가"] * r["공급률"] * r["수량"]) if pd.notna(r["공급률"]) and r["공급률"] and pd.notna(r["정가"]) else 0,
@@ -1497,35 +1509,11 @@ def _render_geukdong_excel(instruct_all, accounts_df, key_prefix="t2"):
         _gk_k2.metric("출고 수량", f"{int(_gk_agg['수량'].sum())}권")
         _gk_k3.metric("총 금액", f"₩{fmt_krw_short(_gk_total_amount)}")
 
-        _gk_show = _gk_agg[["상품바코드", "상품명", "수량", "출판사"]].copy()
-        st.dataframe(_gk_show, hide_index=True, use_container_width=True)
-
-        _gk_result = pd.DataFrame()
-        _gk_result["NO."] = range(1, len(_gk_agg) + 1)
-        _gk_result["상품바코드"] = _gk_agg["상품바코드"].values
-        _gk_result["상품명"] = _gk_agg["상품명"].values
-        _gk_result["#"] = ""
-        _gk_result["정 가"] = _gk_agg["정가"].apply(lambda x: int(x) if pd.notna(x) else 0).values
-        _gk_result["수 량"] = _gk_agg["수량"].values
-        _gk_result["%"] = _gk_agg["공급률"].apply(lambda x: f"{x*100:.0f}" if pd.notna(x) and x else "").values
-        _gk_result["단 가"] = _gk_agg.apply(
-            lambda r: int(r["정가"] * r["공급률"]) if pd.notna(r["공급률"]) and r["공급률"] and pd.notna(r["정가"]) else (int(r["정가"]) if pd.notna(r["정가"]) else 0),
-            axis=1
-        ).values
-        _gk_result["금 액"] = (_gk_result["단 가"] * _gk_result["수 량"]).values
-        _gk_result[""] = ""
-        _gk_result["출판사"] = _gk_agg["출판사"].apply(lambda x: str(x) if pd.notna(x) else "").values
-        _gk_result["저자"] = _gk_agg["저자"].apply(lambda x: str(x) if pd.notna(x) else "").values
-        _gk_result["출판년도"] = _gk_agg["출판년도"].apply(lambda x: str(int(x)) if pd.notna(x) else "").values
-
-        _gk_buf = io.BytesIO()
-        with pd.ExcelWriter(_gk_buf, engine="openpyxl") as writer:
-            _gk_result.to_excel(writer, sheet_name="극동", index=False)
-        _gk_buf.seek(0)
+        st.dataframe(_gk_agg[["상품바코드", "상품명", "수량", "출판사"]].copy(), hide_index=True, use_container_width=True)
 
         st.download_button(
             f"극동 다운로드 ({len(_gk_agg)}종 / {int(_gk_agg['수량'].sum())}권)",
-            _gk_buf.getvalue(),
+            _gk_bytes,
             file_name=f"극동_{date.today().strftime('%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}_gk_xlsx_dl",
@@ -1613,26 +1601,55 @@ def _render_delivery_list(instruct_all, accounts_df=None):
                         }
 
                 with _eng.connect() as _conn:
+                    # 미등록(registered=FALSE) 건 조회 → seq_no/batch_id 덮어쓰기 방지
+                    _pending_boxes = set()
+                    try:
+                        from sqlalchemy import text as _chk_text
+                        _chk_rows = _conn.execute(_chk_text(
+                            "SELECT shipment_box_id FROM delivery_list_logs "
+                            "WHERE shipment_box_id = ANY(:ids) AND registered = FALSE"
+                        ), {"ids": list(_seen_boxes.keys())}).fetchall()
+                        _pending_boxes = {r[0] for r in _chk_rows}
+                    except Exception:
+                        pass
+
                     for _vals in _seen_boxes.values():
+                        _box = _vals["shipment_box_id"]
                         _stmt = pg_insert(DeliveryListLog.__table__).values(**_vals)
-                        _stmt = _stmt.on_conflict_do_update(
-                            index_elements=["shipment_box_id"],
-                            set_={
-                                "account_id": _vals["account_id"],
-                                "order_id": _vals["order_id"],
-                                "vendor_item_id": _vals["vendor_item_id"],
-                                "receiver_name": _vals["receiver_name"],
-                                "buyer_name": _vals["buyer_name"],
-                                "seq_no": _vals["seq_no"],
-                                "batch_id": _batch_id,
-                                "downloaded_at": datetime.utcnow(),
-                                "registered": False,
-                            },
-                        )
+                        if _box in _pending_boxes:
+                            # 이전 배치에서 아직 미등록 → 메타만 갱신, seq_no/batch_id 유지
+                            _stmt = _stmt.on_conflict_do_update(
+                                index_elements=["shipment_box_id"],
+                                set_={
+                                    "account_id": _vals["account_id"],
+                                    "order_id": _vals["order_id"],
+                                    "vendor_item_id": _vals["vendor_item_id"],
+                                    "receiver_name": _vals["receiver_name"],
+                                    "buyer_name": _vals["buyer_name"],
+                                },
+                            )
+                        else:
+                            # 신규 또는 이미 등록 완료 → 전체 갱신
+                            _stmt = _stmt.on_conflict_do_update(
+                                index_elements=["shipment_box_id"],
+                                set_={
+                                    "account_id": _vals["account_id"],
+                                    "order_id": _vals["order_id"],
+                                    "vendor_item_id": _vals["vendor_item_id"],
+                                    "receiver_name": _vals["receiver_name"],
+                                    "buyer_name": _vals["buyer_name"],
+                                    "seq_no": _vals["seq_no"],
+                                    "batch_id": _batch_id,
+                                    "downloaded_at": datetime.utcnow(),
+                                },
+                            )
                         _conn.execute(_stmt)
                     _conn.commit()
+                    if _pending_boxes:
+                        logger.info(f"미등록 {len(_pending_boxes)}건 seq_no/batch_id 보존 (덮어쓰기 방지)")
                 st.session_state["_last_batch_id"] = _batch_id
                 st.session_state[_dl_batch_key] = _dl_box_set
+                st.session_state["_dl_downloaded_at"] = datetime.now()
                 logger.info(f"배송리스트 {len(_seen_boxes)}건 DB 기록 완료 (batch={_batch_id[:8]})")
             except Exception as e:
                 logger.error(f"배송리스트 DB 기록 실패: {e}")
@@ -1710,7 +1727,7 @@ def _render_delivery_list(instruct_all, accounts_df=None):
 
         # 발주 스냅샷 자동 저장
         try:
-            _enriched = _enrich_purchase_order_data(_dl_orders)
+            _enriched = _enrich_purchase_order_data_cached(_get_orders_hash(_dl_orders), _dl_orders)
             _po_batch = _save_purchase_order_to_db(_enriched)
         except Exception as e:
             logger.warning(f"발주 스냅샷 저장 실패: {e}")
@@ -1795,7 +1812,54 @@ def _render_invoice_upload(instruct_all, accounts_df):
         st.warning("매칭 결과가 없습니다. 엑셀 형식을 확인하세요. ('순번/운송장번호' 또는 '묶음배송번호/주문번호/운송장번호' 필요)")
         return
 
+    # ── 2.5 묶음배송 내 다건 아이템 보충 ──
+    # 매칭은 묶음배송번호 1건만 반환하지만, 실제로는 여러 vendorItemId가 있을 수 있음
+    if not instruct_all.empty:
+        _matched_boxes = set(_matched_df["묶음배송번호"].astype(str))
+        _extra_items = instruct_all[
+            instruct_all["묶음배송번호"].astype(str).isin(_matched_boxes)
+        ][["묶음배송번호", "주문번호", "_account_id", "_vendor_item_id"]].copy()
+        # 매칭 결과에 운송장번호를 붙여서 확장
+        _invoice_map = dict(zip(_matched_df["묶음배송번호"].astype(str), _matched_df["운송장번호"]))
+        _extra_items["운송장번호"] = _extra_items["묶음배송번호"].astype(str).map(_invoice_map)
+        _extra_items = _extra_items[_extra_items["운송장번호"].notna()].copy()
+        if not _extra_items.empty:
+            _matched_df = _extra_items.drop_duplicates(
+                subset=["묶음배송번호", "_vendor_item_id"], keep="first"
+            ).copy()
+
     st.success(f"매칭 완료: {len(_matched_df)}건 ({_method})")
+
+    # ── 2.8 송장 누락 감지: 배치에는 있지만 한진 매칭 안 된 건 ──
+    _missing_df = check_missing_invoices(_batch_df, _matched_df)
+    if _missing_df is not None and not _missing_df.empty:
+        st.error(
+            f"⚠ 송장 누락 {len(_missing_df)}건 — "
+            "배송리스트에 있지만 한진 엑셀에서 매칭되지 않았습니다. "
+            "송장이 출력되지 않아 포장/발송이 안 될 수 있습니다."
+        )
+        with st.expander(f"송장 누락 상세 ({len(_missing_df)}건)", expanded=True):
+            st.dataframe(
+                _missing_df.rename(columns={"번호": "순번"}),
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "묶음배송번호": st.column_config.NumberColumn(format="%d"),
+                    "주문번호": st.column_config.NumberColumn(format="%d"),
+                },
+            )
+
+    # ── 2.9 배송리스트 다운로드 후 경과시간 경고 ──
+    _dl_time = st.session_state.get("_dl_downloaded_at")
+    if _dl_time:
+        _elapsed = datetime.now() - _dl_time
+        _elapsed_hrs = _elapsed.total_seconds() / 3600
+        if _elapsed_hrs >= 2:
+            st.warning(
+                f"배송리스트 다운로드 후 {int(_elapsed_hrs)}시간 경과 — "
+                "그 사이 출고중지 요청이 들어왔을 수 있습니다. "
+                "송장 등록 시 출고중지(RU) 자동 체크됩니다."
+            )
 
     # ── 3. 등록 가능 여부 분류 ──
     _result = check_registerable(_matched_df, instruct_all, _batch_df)
@@ -1857,11 +1921,30 @@ def _render_invoice_upload(instruct_all, accounts_df):
             st.info("출고중지 건을 제외하면 등록할 송장이 없습니다.")
         return
 
-    # ── 5. 묶음배송 중복 제거 + 등록 ──
+    # ── 4.5 묶음배송 부분 취소 필터링 ──
+    if not instruct_all.empty and "취소" in instruct_all.columns:
+        _canceled_keys = set()
+        _all_orders_raw = st.session_state.get("_orders_live_cache", pd.DataFrame())
+        if not _all_orders_raw.empty and "취소" in _all_orders_raw.columns:
+            _canceled = _all_orders_raw[_all_orders_raw["취소"] == True]
+            if not _canceled.empty:
+                _canceled_keys = set(
+                    _canceled["묶음배송번호"].astype(str) + "_" + _canceled["_vendor_item_id"].astype(str)
+                )
+        if _canceled_keys:
+            _safe_df["_cancel_key"] = _safe_df["묶음배송번호"].astype(str) + "_" + _safe_df["_vendor_item_id"].astype(str)
+            _is_canceled = _safe_df["_cancel_key"].isin(_canceled_keys)
+            _n_canceled = _is_canceled.sum()
+            if _n_canceled > 0:
+                st.warning(f"묶음배송 내 취소 아이템 {_n_canceled}건 제외")
+                _safe_df = _safe_df[~_is_canceled].copy()
+            _safe_df = _safe_df.drop(columns=["_cancel_key"], errors="ignore")
+
+    # ── 5. 동일 송장 중복 제거 (묶음배송 내 다건 상품은 보존) ──
     _before_dedup = len(_safe_df)
-    _safe_df = _safe_df.drop_duplicates(subset=["묶음배송번호"], keep="first").copy()
+    _safe_df = _safe_df.drop_duplicates(subset=["묶음배송번호", "_vendor_item_id"], keep="first").copy()
     if _before_dedup != len(_safe_df):
-        st.caption(f"묶음배송 중복 제거: {_before_dedup}행 → {len(_safe_df)}건")
+        st.caption(f"중복 제거: {_before_dedup}행 → {len(_safe_df)}건")
 
     if st.button(f"전체 송장 등록 ({len(_safe_df)}건)", key="t2_btn_bulk_invoice", type="primary"):
         _total_success = 0
@@ -1893,6 +1976,7 @@ def _render_invoice_upload(instruct_all, accounts_df):
                     "estimatedShippingDate": "",
                 })
 
+            _acct_success_items = []
             try:
                 _result = _client.upload_invoice(_inv_data)
                 _s_cnt = 0
@@ -1901,7 +1985,7 @@ def _render_invoice_upload(instruct_all, accounts_df):
                     for _ri in _result["data"].get("responseList", []):
                         if _ri.get("succeed"):
                             _s_cnt += 1
-                            _success_items.append({
+                            _acct_success_items.append({
                                 "shipmentBoxId": _ri.get("shipmentBoxId"),
                                 "invoiceNumber": str(_ri.get("invoiceNumber", "")),
                                 "deliveryCompanyCode": "HANJIN",
@@ -1911,7 +1995,7 @@ def _render_invoice_upload(instruct_all, accounts_df):
                             st.error(f"  [{_acct_row['account_name']}] {_ri.get('shipmentBoxId')}: {_ri.get('resultMessage', '')}")
                 else:
                     _s_cnt = len(_inv_data)
-                    _success_items.extend(_inv_data)
+                    _acct_success_items.extend(_inv_data)
                 _total_success += _s_cnt
                 _total_fail += _f_cnt
                 st.info(f"[{_acct_row['account_name']}] 성공 {_s_cnt}건" + (f", 실패 {_f_cnt}건" if _f_cnt else ""))
@@ -1919,20 +2003,33 @@ def _render_invoice_upload(instruct_all, accounts_df):
                 _total_fail += len(_inv_data)
                 st.error(f"[{_acct_row['account_name']}] API 오류: {e}")
 
+            # 계정별로 즉시 DB 반영 (동기)
+            if _acct_success_items:
+                _update_orders_status(_acct_success_items, account_id=_aid)
+                _success_items.extend(_acct_success_items)
+
         if _success_items:
-            _update_orders_status(_success_items)
-            try:
-                _success_box_ids = [int(s["shipmentBoxId"]) for s in _success_items]
-                from dashboard.utils import engine as _eng
-                from sqlalchemy import text as _sa_text
-                with _eng.connect() as _conn:
-                    _conn.execute(
-                        _sa_text("UPDATE delivery_list_logs SET registered = TRUE WHERE shipment_box_id = ANY(:ids)"),
-                        {"ids": _success_box_ids},
-                    )
-                    _conn.commit()
-            except Exception as e:
-                logger.warning(f"배송리스트 로그 등록마킹 실패: {e}")
+            _success_box_ids = [int(s["shipmentBoxId"]) for s in _success_items]
+            _mark_ok = False
+            from dashboard.utils import engine as _eng
+            from sqlalchemy import text as _sa_text
+            for _retry in range(3):
+                try:
+                    with _eng.connect() as _conn:
+                        _conn.execute(
+                            _sa_text("UPDATE delivery_list_logs SET registered = TRUE WHERE shipment_box_id = ANY(:ids)"),
+                            {"ids": _success_box_ids},
+                        )
+                        _conn.commit()
+                    _mark_ok = True
+                    break
+                except Exception as e:
+                    logger.warning(f"배송리스트 등록마킹 재시도 {_retry + 1}/3: {e}")
+            if not _mark_ok:
+                st.error(
+                    f"⚠ 송장은 쿠팡에 등록됐지만 DB 마킹 실패 (box_ids: {_success_box_ids[:5]}...) — "
+                    "다음 송장 등록 시 중복 시도될 수 있으니 확인하세요."
+                )
 
         if _total_success > 0:
             st.session_state["_step_invoice"] = True

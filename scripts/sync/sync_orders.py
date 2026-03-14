@@ -11,7 +11,6 @@ WING Ordersheet API → orders 테이블
 """
 import os
 import sys
-import json
 import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,6 +33,14 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from core.api.wing_client import CoupangWingClient, CoupangWingError
 from core.services.sync_base import get_accounts, create_wing_client, match_listing
+
+from dashboard.services.order_helpers import (
+    parse_dt,
+    extract_price,
+    extract_order_items,
+    build_upsert_params,
+    UPSERT_ORDER_SQL,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -83,126 +90,6 @@ class OrderSync:
         """계정 정보로 WING 클라이언트 생성"""
         return create_wing_client(account)
 
-    def _parse_datetime(self, dt_str) -> Optional[str]:
-        """날짜/시간 문자열 파싱"""
-        if not dt_str:
-            return None
-        if isinstance(dt_str, datetime):
-            return dt_str.isoformat()
-        # "2026-01-15T10:30:00" 형식
-        return str(dt_str)[:19]
-
-    @staticmethod
-    def _extract_price(price_val) -> int:
-        """v5 가격 Object {currencyCode, units, nanos} 또는 v4 plain int 파싱"""
-        if price_val is None:
-            return 0
-        if isinstance(price_val, dict):
-            return int(price_val.get("units", 0) or 0)
-        return int(price_val or 0)
-
-    def _extract_order_items(self, ordersheet: dict) -> List[dict]:
-        """
-        발주서 응답에서 주문 아이템 추출
-
-        API 응답 구조:
-        - shipmentBoxId, orderId, ordererName, ...
-        - orderItems: [{vendorItemId, vendorItemName, shippingCount, ...}]
-        """
-        items = ordersheet.get("orderItems", [])
-        if not items:
-            # orderItems가 없으면 ordersheet 자체를 아이템으로 처리
-            return [ordersheet]
-        return items
-
-    UPSERT_SQL = """
-        INSERT INTO orders
-            (account_id, shipment_box_id, order_id, vendor_item_id,
-             status, ordered_at, paid_at,
-             orderer_name, receiver_name, receiver_addr, receiver_post_code,
-             product_id, seller_product_id, seller_product_name, vendor_item_name,
-             shipping_count, cancel_count, hold_count_for_cancel,
-             sales_price, order_price, discount_price, shipping_price,
-             delivery_company_name, invoice_number, shipment_type,
-             delivered_date, confirm_date,
-             refer, canceled, listing_id, raw_json, updated_at)
-        VALUES
-            (:account_id, :shipment_box_id, :order_id, :vendor_item_id,
-             :status, :ordered_at, :paid_at,
-             :orderer_name, :receiver_name, :receiver_addr, :receiver_post_code,
-             :product_id, :seller_product_id, :seller_product_name, :vendor_item_name,
-             :shipping_count, :cancel_count, :hold_count_for_cancel,
-             :sales_price, :order_price, :discount_price, :shipping_price,
-             :delivery_company_name, :invoice_number, :shipment_type,
-             :delivered_date, :confirm_date,
-             :refer, :canceled, :listing_id, :raw_json, :updated_at)
-        ON CONFLICT (account_id, shipment_box_id, vendor_item_id) DO UPDATE SET
-            status=EXCLUDED.status, ordered_at=EXCLUDED.ordered_at, paid_at=EXCLUDED.paid_at,
-            orderer_name=EXCLUDED.orderer_name, receiver_name=EXCLUDED.receiver_name,
-            receiver_addr=EXCLUDED.receiver_addr, receiver_post_code=EXCLUDED.receiver_post_code,
-            product_id=EXCLUDED.product_id, seller_product_id=EXCLUDED.seller_product_id,
-            seller_product_name=EXCLUDED.seller_product_name, vendor_item_name=EXCLUDED.vendor_item_name,
-            shipping_count=EXCLUDED.shipping_count, cancel_count=EXCLUDED.cancel_count,
-            hold_count_for_cancel=EXCLUDED.hold_count_for_cancel,
-            sales_price=EXCLUDED.sales_price, order_price=EXCLUDED.order_price,
-            discount_price=EXCLUDED.discount_price, shipping_price=EXCLUDED.shipping_price,
-            delivery_company_name=EXCLUDED.delivery_company_name, invoice_number=EXCLUDED.invoice_number,
-            shipment_type=EXCLUDED.shipment_type, delivered_date=EXCLUDED.delivered_date,
-            confirm_date=EXCLUDED.confirm_date, refer=EXCLUDED.refer, canceled=EXCLUDED.canceled,
-            listing_id=EXCLUDED.listing_id, raw_json=EXCLUDED.raw_json, updated_at=EXCLUDED.updated_at
-    """
-
-    def _build_params(self, account_id: int, status: str, os_data: dict, item: dict) -> Optional[dict]:
-        """단일 주문 아이템 → DB 파라미터 변환"""
-        shipment_box_id = os_data.get("shipmentBoxId")
-        order_id = os_data.get("orderId")
-        if not shipment_box_id or not order_id:
-            return None
-
-        v_item_id = item.get("vendorItemId") or os_data.get("vendorItemId")
-        sp_id = item.get("sellerProductId") or os_data.get("sellerProductId")
-        sp_name = item.get("sellerProductName") or os_data.get("sellerProductName", "")
-
-        orderer = os_data.get("orderer") or {}
-        receiver = os_data.get("receiver") or {}
-        addr1 = receiver.get("addr1", "") or ""
-        addr2 = receiver.get("addr2", "") or ""
-
-        return {
-            "account_id": account_id,
-            "shipment_box_id": int(shipment_box_id),
-            "order_id": int(order_id),
-            "vendor_item_id": int(v_item_id) if v_item_id else 0,
-            "status": status,
-            "ordered_at": self._parse_datetime(os_data.get("orderedAt")),
-            "paid_at": self._parse_datetime(os_data.get("paidAt")),
-            "orderer_name": orderer.get("name", ""),
-            "receiver_name": receiver.get("name", ""),
-            "receiver_addr": f"{addr1} {addr2}".strip(),
-            "receiver_post_code": receiver.get("postCode", ""),
-            "product_id": int(item.get("productId") or 0) or None,
-            "seller_product_id": int(sp_id) if sp_id else None,
-            "seller_product_name": sp_name,
-            "vendor_item_name": item.get("vendorItemName") or "",
-            "shipping_count": int(item.get("shippingCount", 0) or 0),
-            "cancel_count": int(item.get("cancelCount", 0) or 0),
-            "hold_count_for_cancel": int(item.get("holdCountForCancel", 0) or 0),
-            "sales_price": self._extract_price(item.get("salesPrice")),
-            "order_price": self._extract_price(item.get("orderPrice")),
-            "discount_price": self._extract_price(item.get("discountPrice")),
-            "shipping_price": self._extract_price(os_data.get("shippingPrice")),
-            "delivery_company_name": os_data.get("deliveryCompanyName", ""),
-            "invoice_number": os_data.get("invoiceNumber", ""),
-            "shipment_type": os_data.get("shipmentType", ""),
-            "delivered_date": self._parse_datetime(os_data.get("deliveredDate")),
-            "confirm_date": self._parse_datetime(item.get("confirmDate")),
-            "refer": os_data.get("refer", ""),
-            "canceled": bool(item.get("canceled", False)),
-            "listing_id": None,
-            "raw_json": json.dumps(os_data, ensure_ascii=False, default=str)[:5000],
-            "updated_at": datetime.now().isoformat(),
-        }
-
     def sync_account(self, account: dict, date_from: date, date_to: date,
                      statuses: List[str] = None,
                      progress_callback: Callable = None) -> dict:
@@ -242,8 +129,8 @@ class OrderSync:
             if not ordersheets:
                 continue
             for os_data in ordersheets:
-                for item in self._extract_order_items(os_data):
-                    params = self._build_params(account_id, status, os_data, item)
+                for item in extract_order_items(os_data):
+                    params = build_upsert_params(account_id, status, os_data, item)
                     if params:
                         all_params.append(params)
 
@@ -257,7 +144,7 @@ class OrderSync:
                 with self.engine.connect() as conn:
                     for params in all_params:
                         try:
-                            conn.execute(text(self.UPSERT_SQL), params)
+                            conn.execute(text(UPSERT_ORDER_SQL), params)
                             total_upserted += 1
                         except (SQLAlchemyError, ValueError, TypeError) as e:
                             logger.warning(f"  DB 오류: {e}")
@@ -279,7 +166,7 @@ class OrderSync:
                     sb_id = os_data.get("shipmentBoxId")
                     if not sb_id:
                         continue
-                    for item in self._extract_order_items(os_data):
+                    for item in extract_order_items(os_data):
                         v_id = item.get("vendorItemId") or os_data.get("vendorItemId") or 0
                         api_active_keys.add((int(sb_id), int(v_id)))
 
