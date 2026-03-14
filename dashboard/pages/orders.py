@@ -264,17 +264,12 @@ def render(selected_account, accounts_df, account_names):
             _inst_total = len(_inst_by_box)
             _inst_amount = int(_inst_by_box["결제금액"].sum()) if not _inst_by_box.empty else 0
 
-            # 건수 차이 안내 (취소·묶음배송으로 인한 차이)
             _n_canceled = int(_instruct_live["취소"].sum()) if not _instruct_live.empty else 0
-            _n_items = len(_instruct_all)
-            _diff_parts = []
-            if _n_canceled > 0:
-                _diff_parts.append(f"취소 {_n_canceled}건 제외")
-            if _n_items != _inst_total:
-                _diff_parts.append(f"묶음배송 {_n_items - _inst_total}건 합산")
-            _diff_note = f" ({', '.join(_diff_parts)})" if _diff_parts else ""
 
-            st.caption(f"상품준비중 {_inst_total:,}건 · ₩{fmt_krw_short(_inst_amount)}{_diff_note}")
+            _caption = f"배송리스트 대상 {_inst_total:,}건 · ₩{fmt_krw_short(_inst_amount)}"
+            if _n_canceled > 0:
+                _caption += f" (취소 {_n_canceled}건 제외됨)"
+            st.caption(_caption)
 
             # 주문 그리드 — 접힌 상태로 제공 (항상 전체 선택이 기본)
             with st.expander(f"주문 목록 ({_inst_total}건)", expanded=False):
@@ -608,11 +603,10 @@ def _render_order_stats(all_orders, accounts_df):
     _today_instruct = int(_k.get('today_instruct', 0))
     _today_shipped = int(_k.get('today_shipped', 0))
 
-    _c1, _c2, _c3, _c4, _c5 = st.columns(5)
-    _order_help = None
+    _c1, _c2, _c3, _c4, _c5, _c6 = st.columns(6)
+    _c1.metric("오늘 주문", f"{_today_total:,}건")
     if _today_shipped > 0:
-        _order_help = f"대기 {_today_instruct} + 출고완료 {_today_shipped}"
-    _c1.metric("오늘 주문", f"{_today_total:,}건", help=_order_help)
+        _c1.caption(f"대기 {_today_instruct} + 출고 {_today_shipped}")
     _c2.metric("배송리스트", f"{int(_k.get('today_dl_batches', 0))}회")
     _c3.metric("송장 등록", f"{int(_k.get('today_registered', 0)):,}건")
     _c4.metric("미등록 (전체)", f"{int(_k.get('total_pending', 0)):,}건",
@@ -1554,7 +1548,7 @@ def _render_delivery_list(instruct_all, accounts_df=None):
     try:
         _dl_orders = instruct_all.copy()
         _acct_counts = _dl_orders.groupby("계정").size().reset_index(name="건수")
-        st.caption("현재 상품준비중(INSTRUCT) 상태인 주문만 포함 — 이미 출고된 주문은 자동 제외")
+        st.caption("이미 출고된 주문은 포함되지 않습니다")
         st.dataframe(_acct_counts, hide_index=True)
 
         # ── 출고중지 사전 확인 ──
@@ -1738,12 +1732,8 @@ def _render_delivery_list(instruct_all, accounts_df=None):
         st.dataframe(_pick_summary, hide_index=True, use_container_width=True,
                      column_config={"도서명": st.column_config.TextColumn(width="large")})
 
-    _n_unique_boxes = _dl_df["묶음배송번호"].nunique()
-    _dl_label = f"배송리스트 다운로드 ({_n_unique_boxes}건)"
-    if len(_dl_orders) != _n_unique_boxes:
-        _dl_label += f" — 아이템 {len(_dl_orders)}개 중 묶음배송 {len(_dl_orders) - _n_unique_boxes}건 합산"
     if st.download_button(
-        _dl_label,
+        f"배송리스트 다운로드 ({len(_dl_df)}건)",
         _xl_bytes,
         file_name=f"DeliveryList({date.today().isoformat()})_통합.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
