@@ -586,6 +586,12 @@ def _render_order_stats(all_orders, accounts_df):
             (SELECT COUNT(DISTINCT shipment_box_id) FROM orders
              WHERE (ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
                AND canceled = false) AS today_orders,
+            (SELECT COUNT(DISTINCT shipment_box_id) FROM orders
+             WHERE (ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
+               AND canceled = false AND status = 'INSTRUCT') AS today_instruct,
+            (SELECT COUNT(DISTINCT shipment_box_id) FROM orders
+             WHERE (ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
+               AND canceled = false AND status IN ('DEPARTURE','DELIVERING','FINAL_DELIVERY')) AS today_shipped,
             (SELECT COUNT(DISTINCT batch_id) FROM delivery_list_logs
              WHERE (downloaded_at + INTERVAL '9 hours')::date = CURRENT_DATE) AS today_dl_batches,
             (SELECT COUNT(*) FROM delivery_list_logs
@@ -598,8 +604,15 @@ def _render_order_stats(all_orders, accounts_df):
     """)
     _k = _kpi.iloc[0] if not _kpi.empty else {}
 
+    _today_total = int(_k.get('today_orders', 0))
+    _today_instruct = int(_k.get('today_instruct', 0))
+    _today_shipped = int(_k.get('today_shipped', 0))
+
     _c1, _c2, _c3, _c4, _c5 = st.columns(5)
-    _c1.metric("오늘 주문", f"{int(_k.get('today_orders', 0)):,}건")
+    _order_help = None
+    if _today_shipped > 0:
+        _order_help = f"대기 {_today_instruct} + 출고완료 {_today_shipped}"
+    _c1.metric("오늘 주문", f"{_today_total:,}건", help=_order_help)
     _c2.metric("배송리스트", f"{int(_k.get('today_dl_batches', 0))}회")
     _c3.metric("송장 등록", f"{int(_k.get('today_registered', 0)):,}건")
     _c4.metric("미등록 (전체)", f"{int(_k.get('total_pending', 0)):,}건",
@@ -1541,6 +1554,7 @@ def _render_delivery_list(instruct_all, accounts_df=None):
     try:
         _dl_orders = instruct_all.copy()
         _acct_counts = _dl_orders.groupby("계정").size().reset_index(name="건수")
+        st.caption("현재 상품준비중(INSTRUCT) 상태인 주문만 포함 — 이미 출고된 주문은 자동 제외")
         st.dataframe(_acct_counts, hide_index=True)
 
         # ── 출고중지 사전 확인 ──
