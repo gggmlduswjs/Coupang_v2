@@ -264,7 +264,17 @@ def render(selected_account, accounts_df, account_names):
             _inst_total = len(_inst_by_box)
             _inst_amount = int(_inst_by_box["결제금액"].sum()) if not _inst_by_box.empty else 0
 
-            st.caption(f"상품준비중 {_inst_total:,}건 · ₩{fmt_krw_short(_inst_amount)}")
+            # 건수 차이 안내 (취소·묶음배송으로 인한 차이)
+            _n_canceled = int(_instruct_live["취소"].sum()) if not _instruct_live.empty else 0
+            _n_items = len(_instruct_all)
+            _diff_parts = []
+            if _n_canceled > 0:
+                _diff_parts.append(f"취소 {_n_canceled}건 제외")
+            if _n_items != _inst_total:
+                _diff_parts.append(f"묶음배송 {_n_items - _inst_total}건 합산")
+            _diff_note = f" ({', '.join(_diff_parts)})" if _diff_parts else ""
+
+            st.caption(f"상품준비중 {_inst_total:,}건 · ₩{fmt_krw_short(_inst_amount)}{_diff_note}")
 
             # 주문 그리드 — 접힌 상태로 제공 (항상 전체 선택이 기본)
             with st.expander(f"주문 목록 ({_inst_total}건)", expanded=False):
@@ -1714,8 +1724,12 @@ def _render_delivery_list(instruct_all, accounts_df=None):
         st.dataframe(_pick_summary, hide_index=True, use_container_width=True,
                      column_config={"도서명": st.column_config.TextColumn(width="large")})
 
+    _n_unique_boxes = _dl_df["묶음배송번호"].nunique()
+    _dl_label = f"배송리스트 다운로드 ({_n_unique_boxes}건)"
+    if len(_dl_orders) != _n_unique_boxes:
+        _dl_label += f" — 아이템 {len(_dl_orders)}개 중 묶음배송 {len(_dl_orders) - _n_unique_boxes}건 합산"
     if st.download_button(
-        f"배송리스트 다운로드 ({len(_dl_orders)}건)",
+        _dl_label,
         _xl_bytes,
         file_name=f"DeliveryList({date.today().isoformat()})_통합.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
