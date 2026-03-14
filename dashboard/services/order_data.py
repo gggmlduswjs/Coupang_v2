@@ -271,21 +271,25 @@ def sync_live_orders(accounts_df):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def _get_recent_delivery_receiver_names():
-    """미등록 배송리스트 + 최근 3일 등록 건의 수취인이름 → [묶음배송번호] 맵 반환.
+def _get_recent_delivery_receivers():
+    """미등록 배송리스트 + 최근 3일 등록 건의 수취인 정보 반환.
 
-    한진 N-Focus는 이름만 같아도 합배송할 수 있으므로 (주소가 달라도),
+    한진 N-Focus는 이름만 같아도, 주소만 같아도 합배송할 수 있으므로,
     미등록(아직 한진에 올라가있는) 건은 시간 무관하게 전부 체크하고,
     최근 등록 완료 건도 3일간 체크하여 합배송을 방지한다.
+
+    Returns:
+        (name_to_boxes, addr_to_boxes): 이름→[box_ids], 주소→[box_ids]
     """
     from sqlalchemy import text
     from core.database import engine
 
     name_to_boxes = {}
+    addr_to_boxes = {}
     try:
         with engine.connect() as conn:
             rows = conn.execute(text("""
-                SELECT d.shipment_box_id, o.receiver_name
+                SELECT d.shipment_box_id, o.receiver_name, o.receiver_addr
                 FROM delivery_list_logs d
                 JOIN orders o ON d.shipment_box_id = o.shipment_box_id
                 WHERE d.registered = FALSE
@@ -293,21 +297,29 @@ def _get_recent_delivery_receiver_names():
             """)).fetchall()
             for r in rows:
                 name = (r[1] or "").strip()
+                addr = (r[2] or "").strip()
                 box_id = int(r[0])
-                if name not in name_to_boxes:
-                    name_to_boxes[name] = []
-                if box_id not in name_to_boxes[name]:
-                    name_to_boxes[name].append(box_id)
+                if name:
+                    if name not in name_to_boxes:
+                        name_to_boxes[name] = []
+                    if box_id not in name_to_boxes[name]:
+                        name_to_boxes[name].append(box_id)
+                if addr:
+                    if addr not in addr_to_boxes:
+                        addr_to_boxes[addr] = []
+                    if box_id not in addr_to_boxes[addr]:
+                        addr_to_boxes[addr].append(box_id)
     except Exception:
         pass  # DB 접근 실패 시 기존 로직(현재 배치만)으로 동작
-    return name_to_boxes
+    return name_to_boxes, addr_to_boxes
 
 
 def _build_receiver_suffix_map(orders_df):
-    """동일 수취인이름이 서로 다른 묶음배송번호에 있으면 구분자 부여.
+    """동일 수취인이름 또는 동일 주소가 서로 다른 묶음배송번호에 있으면 구분자 부여.
 
-    한진은 이름만 같아도 합배송할 수 있으므로 (주소/전화번호가 달라도),
-    이름과 주소 모두에 구분자를 부여하여 한진 합포장을 방지한다.
+    한진은 이름만 같아도, 주소만 같아도 합배송할 수 있으므로,
+    이름과 주소 각각 독립적으로 체크하여 구분자를 부여한다.
+    (다른 계정에서 같은 주소로 주문한 건도 감지)
 
     미등록 배송리스트 전체 + 최근 3일 등록 건도 함께 고려하여,
     배치 간(cross-batch) 동일 수취인 합배송을 방지한다.
@@ -316,30 +328,54 @@ def _build_receiver_suffix_map(orders_df):
         dict: {묶음배송번호: {"name": str, "addr": str}}
     """
     # 1) 미등록 + 최근 3일 등록 건 로드 (배치 간 합배송 방지)
-    name_to_boxes = _get_recent_delivery_receiver_names()
+    name_to_boxes, addr_to_boxes = _get_recent_delivery_receivers()
 
     # 2) 현재 배치 주문 추가
     current_box_ids = set()
     _names = orders_df.get("수취인", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+    _addrs = orders_df.get("수취인주소", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
     _boxes = orders_df["묶음배송번호"].astype(int)
-    for name, box_id in zip(_names, _boxes):
+    for name, addr, box_id in zip(_names, _addrs, _boxes):
         current_box_ids.add(box_id)
-        if name not in name_to_boxes:
-            name_to_boxes[name] = []
-        if box_id not in name_to_boxes[name]:
-            name_to_boxes[name].append(box_id)
+        if name:
+            if name not in name_to_boxes:
+                name_to_boxes[name] = []
+            if box_id not in name_to_boxes[name]:
+                name_to_boxes[name].append(box_id)
+        if addr:
+            if addr not in addr_to_boxes:
+                addr_to_boxes[addr] = []
+            if box_id not in addr_to_boxes[addr]:
+                addr_to_boxes[addr].append(box_id)
 
-    suffix_map = {}  # 묶음배송번호 → {"name": suffix, "addr": suffix}
+    suffix_map = {}  # 묶음배송번호 → {"name": str, "addr": str}
+
+    # 이름 기준 구분자
     for name, box_ids in name_to_boxes.items():
         if len(box_ids) <= 1:
             continue
-        # 모든 건에 구분자 부여 — 첫 번째도 (1)로 표시하여 한진 합포장 방지
         for i, box_id in enumerate(box_ids):
-            # 현재 배치에 포함된 건만 suffix_map에 추가
-            # (이전 배치 건은 이미 출력되었으므로 다시 출력하지 않음)
             if box_id in current_box_ids:
                 tag = f" ({i + 1})"
-                suffix_map[box_id] = {"name": tag, "addr": tag}
+                if box_id not in suffix_map:
+                    suffix_map[box_id] = {"name": "", "addr": ""}
+                suffix_map[box_id]["name"] = tag
+
+    # 주소 기준 구분자 (이름이 달라도 주소가 같으면 합배송됨)
+    for addr, box_ids in addr_to_boxes.items():
+        if len(box_ids) <= 1:
+            continue
+        for i, box_id in enumerate(box_ids):
+            if box_id in current_box_ids:
+                tag = f" ({i + 1})"
+                if box_id not in suffix_map:
+                    suffix_map[box_id] = {"name": "", "addr": ""}
+                # 이름 구분자가 아직 없으면 주소 구분자를 이름에도 부여
+                if not suffix_map[box_id]["name"]:
+                    suffix_map[box_id]["name"] = tag
+                if not suffix_map[box_id]["addr"]:
+                    suffix_map[box_id]["addr"] = tag
+
     return suffix_map
 
 
