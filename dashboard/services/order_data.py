@@ -208,7 +208,7 @@ def load_all_orders_live(accounts_df):
         result = pd.concat(frames, ignore_index=True)
         # API 행 우선: 같은 (묶음배송번호, _vendor_item_id) 중복 시 API 유지
         result = result.sort_values("_src").drop_duplicates(
-            subset=["묶음배송번호", "_vendor_item_id"], keep="first"
+            subset=["묶음배송번호", "_vendor_item_id", "_account_id"], keep="first"
         )
         result = result.drop(columns=["_src"]).sort_values("주문일시", ascending=False).reset_index(drop=True)
     else:

@@ -115,7 +115,7 @@ class OrderSync:
                 logger.error(f"  [{account_name}] API 오류 ({status}): {e}")
                 return status, []
 
-        with ThreadPoolExecutor(max_workers=len(statuses)) as pool:
+        with ThreadPoolExecutor(max_workers=min(len(statuses) * len(windows), 15)) as pool:
             futures = []
             for w_from, w_to in windows:
                 for status in statuses:
@@ -138,17 +138,16 @@ class OrderSync:
         total_upserted = 0
         total_matched = 0
 
-        # 3) DB 배치 저장 (한 커넥션으로 일괄)
+        # 3) DB 배치 저장 (트랜잭션 — 개별 오류 시 해당 행만 스킵)
         if all_params:
             try:
-                with self.engine.connect() as conn:
+                with self.engine.begin() as conn:
                     for params in all_params:
                         try:
                             conn.execute(text(UPSERT_ORDER_SQL), params)
                             total_upserted += 1
                         except (SQLAlchemyError, ValueError, TypeError) as e:
-                            logger.warning(f"  DB 오류: {e}")
-                    conn.commit()
+                            logger.warning(f"  DB 오류 (스킵): {e}")
             except SQLAlchemyError as e:
                 logger.error(f"  [{account_name}] DB 배치 오류: {e}")
 
@@ -156,7 +155,12 @@ class OrderSync:
         #    날짜 범위가 충분히 넓을 때만 (60일+) 정리 수행 — quick sync에서 오작동 방지
         active_statuses = {"ACCEPT", "INSTRUCT", "DEPARTURE", "DELIVERING"}
         date_span = (date.fromisoformat(str(date_to)) - date.fromisoformat(str(date_from))).days if isinstance(date_from, str) else (date_to - date_from).days
-        if date_span >= 60 and (statuses is None or active_statuses.issubset(set(statuses or []))):
+
+        # API 부분 실패 감지: 모든 활성 상태 조회가 성공했을 때만 정리 실행
+        fetched_active_statuses = {status for status, ordersheets in all_results if status in active_statuses}
+        all_active_fetched = active_statuses.issubset(fetched_active_statuses)
+
+        if date_span >= 60 and all_active_fetched and (statuses is None or active_statuses.issubset(set(statuses or []))):
             # API에서 가져온 활성 주문의 (shipment_box_id, vendor_item_id) 집합
             api_active_keys = set()
             for status, ordersheets in all_results:

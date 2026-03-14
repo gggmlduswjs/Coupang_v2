@@ -944,24 +944,36 @@ class CoupangWingClient:
         all_response_list = []
         last_result = None
 
+        success_count = 0
+        fail_count = 0
         for i in range(0, len(shipment_box_ids), batch_size):
             batch = shipment_box_ids[i:i + batch_size]
             data = {
                 "vendorId": self.vendor_id,
                 "shipmentBoxIds": batch,
             }
-            result = self._request("PUT", path, data=data)
-            last_result = result
+            try:
+                result = self._request("PUT", path, data=data)
+                last_result = result
 
-            # responseList 수집
-            if isinstance(result, dict) and "data" in result:
-                resp_data = result["data"]
-                if isinstance(resp_data, dict) and "responseList" in resp_data:
-                    all_response_list.extend(resp_data["responseList"])
+                # responseList 수집
+                if isinstance(result, dict) and "data" in result:
+                    resp_data = result["data"]
+                    if isinstance(resp_data, dict) and "responseList" in resp_data:
+                        all_response_list.extend(resp_data["responseList"])
+                        success_count += len(resp_data["responseList"])
+            except Exception as e:
+                fail_count += len(batch)
+                all_response_list.extend([
+                    {"shipmentBoxId": sb_id, "resultCode": "ERROR", "resultMessage": str(e)}
+                    for sb_id in batch
+                ])
 
         # 통합 결과 반환
         if last_result and isinstance(last_result, dict) and "data" in last_result:
             last_result["data"]["responseList"] = all_response_list
+            last_result["data"]["successCount"] = success_count
+            last_result["data"]["failCount"] = fail_count
         return last_result
 
     def upload_invoice(self, invoice_data_list: List[Dict]) -> Dict[str, Any]:
@@ -977,14 +989,19 @@ class CoupangWingClient:
             업로드 결과
         """
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/orders/invoices"
-        # 필수 필드 기본값 보장
-        for item in invoice_data_list:
-            item.setdefault("splitShipping", False)
-            item.setdefault("preSplitShipped", False)
-            item.setdefault("estimatedShippingDate", "")
+        # 필수 필드 기본값 보장 (원본 리스트 수정 방지 — 복사본 사용)
+        safe_list = [
+            {
+                **item,
+                "splitShipping": item.get("splitShipping", False),
+                "preSplitShipped": item.get("preSplitShipped", False),
+                "estimatedShippingDate": item.get("estimatedShippingDate", ""),
+            }
+            for item in invoice_data_list
+        ]
         data = {
             "vendorId": self.vendor_id,
-            "orderSheetInvoiceApplyDtos": invoice_data_list,
+            "orderSheetInvoiceApplyDtos": safe_list,
         }
         return self._request("POST", path, data=data)
 

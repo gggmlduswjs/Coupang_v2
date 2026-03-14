@@ -61,10 +61,10 @@ UPSERT_ORDER_SQL = """
     ON CONFLICT (account_id, shipment_box_id, vendor_item_id) DO UPDATE SET
         status = CASE
             WHEN ARRAY_POSITION(
-                ARRAY['ACCEPT','INSTRUCT','DEPARTURE','DELIVERING','FINAL_DELIVERY','NONE_TRACKING'],
+                ARRAY['ACCEPT','INSTRUCT','DEPARTURE','NONE_TRACKING','DELIVERING','FINAL_DELIVERY'],
                 EXCLUDED.status
             ) >= COALESCE(ARRAY_POSITION(
-                ARRAY['ACCEPT','INSTRUCT','DEPARTURE','DELIVERING','FINAL_DELIVERY','NONE_TRACKING'],
+                ARRAY['ACCEPT','INSTRUCT','DEPARTURE','NONE_TRACKING','DELIVERING','FINAL_DELIVERY'],
                 orders.status
             ), 0)
             THEN EXCLUDED.status
@@ -110,7 +110,7 @@ def build_upsert_params(account_id: int, status: str, os_data: dict, item: dict)
         "account_id": account_id,
         "shipment_box_id": int(shipment_box_id),
         "order_id": int(order_id),
-        "vendor_item_id": int(v_item_id) if v_item_id else 0,
+        "vendor_item_id": int(v_item_id) if v_item_id else int(os_data.get("vendorItemId", 0) or 0),
         "status": status,
         "ordered_at": parse_dt(os_data.get("orderedAt")),
         "paid_at": parse_dt(os_data.get("paidAt")),
@@ -137,6 +137,6 @@ def build_upsert_params(account_id: int, status: str, os_data: dict, item: dict)
         "refer": os_data.get("refer", ""),
         "canceled": bool(item.get("canceled", False)),
         "listing_id": None,
-        "raw_json": json.dumps(os_data, ensure_ascii=False, default=str)[:5000],
+        "raw_json": json.dumps(os_data, ensure_ascii=False, default=str),
         "updated_at": datetime.now().isoformat(),
     }
