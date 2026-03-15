@@ -170,18 +170,28 @@ def render(selected_account, accounts_df, account_names):
             ]
             _grid_df = _accept_display[_display_cols].rename(columns={"수취인주소": "배송지"})
 
-            st.dataframe(
+            _grid_df.insert(0, "선택", True)
+            _edited_t1 = st.data_editor(
                 _grid_df, hide_index=True, use_container_width=True, height=500,
                 column_config={
+                    "선택": st.column_config.CheckboxColumn("선택", default=True),
                     "상품/옵션/수량": st.column_config.TextColumn(width="large"),
                     "배송지": st.column_config.TextColumn(width="medium"),
                     "묶음배송번호": st.column_config.NumberColumn(format="%d"),
                 },
+                disabled=[c for c in _grid_df.columns if c != "선택"],
+                key="t1_accept_editor",
             )
 
-            # 전체 선택 (기본)
-            _sel_data = _accept_all.copy()
-            _sel_boxes = _accept_total
+            _sel_mask_t1 = _edited_t1["선택"].tolist()
+            _sel_indices = [i for i, v in enumerate(_sel_mask_t1) if v]
+            if _sel_indices:
+                _sel_box_ids = _accept_display.iloc[_sel_indices]["묶음배송번호"].unique().tolist()
+                _sel_data = _accept_all[_accept_all["묶음배송번호"].isin(_sel_box_ids)].copy()
+                _sel_boxes = len(_sel_box_ids)
+            else:
+                _sel_data = _accept_all.copy()
+                _sel_boxes = _accept_total
 
             # ── 발주확인 액션바 ──
             _ab1, _ab2 = st.columns([3, 1])
@@ -278,15 +288,31 @@ def render(selected_account, accounts_df, account_names):
                 _grid_cols = ["계정", "묶음배송번호", "주문번호", "상품명", "수량", "결제금액_표시", "주문일", "수취인"]
                 _inst_grid_df = _inst_display[_grid_cols].rename(columns={"결제금액_표시": "결제금액"})
 
-                st.dataframe(
+                _inst_grid_df.insert(0, "선택", True)
+                _edited_t2 = st.data_editor(
                     _inst_grid_df, hide_index=True, use_container_width=True, height=400,
                     column_config={
+                        "선택": st.column_config.CheckboxColumn("선택", default=True),
                         "상품명": st.column_config.TextColumn(width="large"),
                         "묶음배송번호": st.column_config.NumberColumn(format="%d"),
                     },
+                    disabled=[c for c in _inst_grid_df.columns if c != "선택"],
+                    key="t2_instruct_editor",
                 )
 
-            _t2_filtered = _instruct_all.copy()
+                _sel_mask_t2 = _edited_t2["선택"].tolist()
+                _t2_sel_indices = [i for i, v in enumerate(_sel_mask_t2) if v]
+                if _t2_sel_indices:
+                    _t2_sel_box_ids = _inst_display.iloc[_t2_sel_indices]["묶음배송번호"].unique().tolist()
+                    st.caption(f"선택: {len(_t2_sel_indices)}건 ({len(_t2_sel_box_ids)}묶음) — 체크 해제한 주문은 배송리스트/송장에서 제외")
+                else:
+                    _t2_sel_box_ids = None
+
+            _t2_sel_box_ids_final = locals().get("_t2_sel_box_ids")
+            if _t2_sel_box_ids_final:
+                _t2_filtered = _instruct_all[_instruct_all["묶음배송번호"].isin(_t2_sel_box_ids_final)].copy()
+            else:
+                _t2_filtered = _instruct_all.copy()
 
             # ── ① 배송리스트 다운로드 ──
             st.divider()
