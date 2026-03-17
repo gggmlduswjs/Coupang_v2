@@ -159,39 +159,90 @@ def _match_by_sequence(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Optio
     return pd.DataFrame(results) if results else None
 
 
-def _match_by_row_order(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """전략2: 한진 원본List — 행 수 일치 시 위치 기반 매칭 + 수취인 교차검증."""
-    hj = hanjin_df[hanjin_df["운송장번호"].notna() & (hanjin_df["운송장번호"] != "")].copy()
-    if hj.empty or len(hj) != len(batch_df):
+def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """전략2: 한진 출력자료 ↔ 배치 수취인 이름 매칭.
+
+    한진 시스템이 배송지역별로 행을 재정렬하므로 행순서 대신 이름으로 매칭.
+    동명이인은 등장 순서대로 1:1 큐 매칭.
+    """
+    from collections import defaultdict
+
+    invoice_col = None
+    for col in ["운송장번호", "송장번호", "운송장", "waybill"]:
+        if col in hanjin_df.columns:
+            invoice_col = col
+            break
+    if invoice_col is None:
         return None
 
-    # 수취인 교차검증: 한진 엑셀에 수취인 컬럼이 있으면 불일치율 체크
-    recv_col = _find_recv_col(hj)
-    if recv_col and "수취인이름" in batch_df.columns:
-        mismatch = 0
-        for i in range(len(hj)):
-            hj_name = _strip_receiver_suffix(str(hj.iloc[i][recv_col]).strip())
-            dl_name = _strip_receiver_suffix(str(batch_df.iloc[i]["수취인이름"]).strip())
-            if hj_name and dl_name and hj_name != dl_name:
-                mismatch += 1
-        mismatch_rate = mismatch / len(hj) if len(hj) > 0 else 0
-        if mismatch_rate > 0.2:
-            logger.warning(f"행순서매칭 수취인 불일치율 {mismatch_rate:.0%} ({mismatch}/{len(hj)}) — 매칭 거부")
-            return None
+    recv_col = _find_recv_col(hanjin_df)
+    if recv_col is None or "수취인이름" not in batch_df.columns:
+        return None
+
+    hj = hanjin_df[hanjin_df[invoice_col].notna() & (hanjin_df[invoice_col] != "")].copy()
+    if hj.empty:
+        return None
+
+    # 배치 수취인 → 주문 목록 (큐) 구성
+    name_queue: dict[str, list] = defaultdict(list)
+    for _, row in batch_df.iterrows():
+        name = _strip_receiver_suffix(str(row["수취인이름"]).strip())
+        if name and name != "nan":
+            name_queue[name].append(row)
+
+    # 구매자 이름으로도 보조 큐 구성 (수취인≠구매자인 경우 fallback)
+    buyer_queue: dict[str, list] = defaultdict(list)
+    if "구매자" in batch_df.columns:
+        for _, row in batch_df.iterrows():
+            buyer = _strip_receiver_suffix(str(row["구매자"]).strip())
+            if buyer and buyer != "nan":
+                buyer_queue[buyer].append(row)
 
     results = []
-    for i in range(len(hj)):
-        hr = hj.iloc[i]
-        dr = batch_df.iloc[i]
+    used_box_ids: set = set()
+
+    for _, hr in hj.iterrows():
+        invoice = str(hr[invoice_col]).strip()
+        hj_name = _strip_receiver_suffix(str(hr[recv_col]).strip())
+        if not hj_name or hj_name == "nan":
+            continue
+
+        # 수취인 이름으로 먼저 탐색, 없으면 구매자 이름으로 fallback
+        matched_row = None
+        for queue in (name_queue.get(hj_name, []), buyer_queue.get(hj_name, [])):
+            for candidate in queue:
+                box_id = candidate["묶음배송번호"]
+                if box_id not in used_box_ids:
+                    matched_row = candidate
+                    break
+            if matched_row is not None:
+                break
+
+        if matched_row is None:
+            continue
+
+        box_id = matched_row["묶음배송번호"]
+        used_box_ids.add(box_id)
         results.append({
-            "묶음배송번호": dr["묶음배송번호"],
-            "주문번호": dr["주문번호"],
-            "운송장번호": str(hr["운송장번호"]).strip(),
-            "_account_id": dr["_account_id"],
-            "_vendor_item_id": dr["_vendor_item_id"],
+            "묶음배송번호": box_id,
+            "주문번호": matched_row["주문번호"],
+            "운송장번호": invoice,
+            "_account_id": matched_row["_account_id"],
+            "_vendor_item_id": matched_row["_vendor_item_id"],
         })
 
-    return pd.DataFrame(results) if results else None
+    if not results:
+        return None
+
+    matched_count = len(results)
+    total_count = len(hj)
+    if matched_count < total_count:
+        logger.warning(
+            f"이름매칭(배치) {matched_count}/{total_count}건 매칭 "
+            f"({total_count - matched_count}건 미매칭)"
+        )
+
+    return pd.DataFrame(results)
 
 
 def _strip_receiver_suffix(name: str) -> str:
@@ -328,11 +379,11 @@ def match_invoices(hanjin_df: pd.DataFrame, batch_df: Optional[pd.DataFrame]) ->
         if result is not None and not result.empty:
             return result, "순번매칭"
 
-    # 전략2: 행순서 매칭
-    if batch_df is not None and "운송장번호" in hanjin_df.columns:
-        result = _match_by_row_order(hanjin_df, batch_df)
+    # 전략2: 이름매칭(배치) — 수취인 이름으로 배치 매칭 (행순서 무관)
+    if batch_df is not None:
+        result = _match_by_name_batch(hanjin_df, batch_df)
         if result is not None and not result.empty:
-            return result, "행순서매칭"
+            return result, "이름매칭(배치)"
 
     # 전략3: 이름 매칭 (DB fallback)
     recv_col = _find_recv_col(hanjin_df)

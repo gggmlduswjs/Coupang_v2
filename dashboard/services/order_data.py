@@ -231,10 +231,16 @@ def get_instruct_orders(all_orders):
 
 
 def get_instruct_by_box(instruct_all):
-    """묶음배송 단위 그룹핑"""
+    """묶음배송 단위 그룹핑 (주소 포함)"""
     if instruct_all.empty:
         return pd.DataFrame()
-    return instruct_all.groupby(["계정", "묶음배송번호", "주문번호", "주문일", "수취인"]).agg(
+    # 수취인주소가 없는 경우 빈 문자열로 채움
+    df = instruct_all.copy()
+    if "수취인주소" not in df.columns:
+        df["수취인주소"] = ""
+    else:
+        df["수취인주소"] = df["수취인주소"].fillna("")
+    return df.groupby(["계정", "묶음배송번호", "주문번호", "주문일", "수취인", "수취인주소"]).agg(
         상품명=("상품명", lambda x: " / ".join(x.unique())),
         수량=("수량", "sum"),
         결제금액=("_order_price_raw", "sum"),
@@ -315,14 +321,14 @@ def _get_recent_delivery_receivers():
 
 
 def _build_receiver_suffix_map(orders_df):
-    """동일 수취인이름 또는 동일 주소가 서로 다른 묶음배송번호에 있으면 구분자 부여.
+    """동일 배송주소(primary) 또는 동일 수취인이름(secondary)이 서로 다른 묶음배송번호에 있으면 구분자 부여.
 
-    한진은 이름만 같아도, 주소만 같아도 합배송할 수 있으므로,
-    이름과 주소 각각 독립적으로 체크하여 구분자를 부여한다.
+    한진 N-Focus는 배송 주소가 같으면 자동 합배송하므로 주소를 1차 기준으로 감지하고,
+    이름이 같은 경우도 보조적으로 구분자를 부여한다.
     (다른 계정에서 같은 주소로 주문한 건도 감지)
 
     미등록 배송리스트 전체 + 최근 3일 등록 건도 함께 고려하여,
-    배치 간(cross-batch) 동일 수취인 합배송을 방지한다.
+    배치 간(cross-batch) 합배송을 방지한다.
 
     Returns:
         dict: {묶음배송번호: {"name": str, "addr": str}}
@@ -350,18 +356,7 @@ def _build_receiver_suffix_map(orders_df):
 
     suffix_map = {}  # 묶음배송번호 → {"name": str, "addr": str}
 
-    # 이름 기준 구분자
-    for name, box_ids in name_to_boxes.items():
-        if len(box_ids) <= 1:
-            continue
-        for i, box_id in enumerate(box_ids):
-            if box_id in current_box_ids:
-                tag = f" ({i + 1})"
-                if box_id not in suffix_map:
-                    suffix_map[box_id] = {"name": "", "addr": ""}
-                suffix_map[box_id]["name"] = tag
-
-    # 주소 기준 구분자 (이름이 달라도 주소가 같으면 합배송됨)
+    # 주소 기준 구분자 (PRIMARY — 한진은 주소가 같으면 합배송)
     for addr, box_ids in addr_to_boxes.items():
         if len(box_ids) <= 1:
             continue
@@ -370,11 +365,20 @@ def _build_receiver_suffix_map(orders_df):
                 tag = f" ({i + 1})"
                 if box_id not in suffix_map:
                     suffix_map[box_id] = {"name": "", "addr": ""}
-                # 이름 구분자가 아직 없으면 주소 구분자를 이름에도 부여
+                suffix_map[box_id]["name"] = tag
+                suffix_map[box_id]["addr"] = tag
+
+    # 이름 기준 구분자 (SECONDARY — 주소 구분자가 없는 건만 보완)
+    for name, box_ids in name_to_boxes.items():
+        if len(box_ids) <= 1:
+            continue
+        for i, box_id in enumerate(box_ids):
+            if box_id in current_box_ids:
+                tag = f" ({i + 1})"
+                if box_id not in suffix_map:
+                    suffix_map[box_id] = {"name": "", "addr": ""}
                 if not suffix_map[box_id]["name"]:
                     suffix_map[box_id]["name"] = tag
-                if not suffix_map[box_id]["addr"]:
-                    suffix_map[box_id]["addr"] = tag
 
     return suffix_map
 

@@ -1673,18 +1673,26 @@ def _render_delivery_list(instruct_all, accounts_df=None):
                 logger.error(f"배송리스트 DB 기록 실패: {e}")
                 st.error(f"배송리스트 DB 기록 실패: {e}")
 
-        # ── 동일 수취인 합배송 방지 안내 ──
+        # ── 동일 주소/수취인 합배송 방지 안내 ──
+        _addr_groups = _dl_df.groupby("수취인 주소")["묶음배송번호"].apply(
+            lambda x: list(x.unique())
+        )
+        _multi_addr = _addr_groups[_addr_groups.apply(len) > 1]
         _recv_groups = _dl_df.groupby("수취인이름")["묶음배송번호"].apply(
             lambda x: list(x.unique())
         )
         _multi_recv = _recv_groups[_recv_groups.apply(len) > 1]
-        if not _multi_recv.empty:
-            _suffix_names = [n for n in _multi_recv.index if n.endswith(")")]
-            if _suffix_names:
-                st.info(
-                    f"동일 수취인 {len(_multi_recv)}명 — "
-                    "한진 합배송 방지를 위해 수취인 이름에 구분자를 자동 추가했습니다."
-                )
+        _has_suffix = any(n.endswith(")") for n in _dl_df["수취인이름"] if isinstance(n, str))
+        if _has_suffix:
+            _parts = []
+            if not _multi_addr.empty:
+                _parts.append(f"동일 주소 {len(_multi_addr)}건")
+            if not _multi_recv.empty:
+                _parts.append(f"동일 수취인 {len(_multi_recv)}명")
+            st.info(
+                f"{' / '.join(_parts)} — "
+                "한진 합배송 방지를 위해 수취인 이름에 구분자를 자동 추가했습니다."
+            )
 
         # ── 이전 다운로드 이력 확인 (정보 표시, 차단 안 함) ──
         _current_boxes = list(int(b) for b in _dl_df["묶음배송번호"])
