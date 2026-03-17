@@ -1031,8 +1031,8 @@ class CoupangWingClient:
         Returns:
             처리 결과
         """
-        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/ordersheets/cancellation/stopShipment"
-        data = {"receiptId": receipt_id, "cancelCount": cancel_count}
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/returnRequests/{receipt_id}/stoppedShipment"
+        data = {"vendorId": self.vendor_id, "receiptId": receipt_id, "cancelCount": cancel_count}
         return self._request("PUT", path, data=data)
 
     def complete_shipment(self, receipt_id: int, delivery_company_code: str, invoice_number: str) -> Dict[str, Any]:
@@ -1047,8 +1047,9 @@ class CoupangWingClient:
         Returns:
             처리 결과
         """
-        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/ordersheets/cancellation/completeShipment"
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/returnRequests/{receipt_id}/completedShipment"
         data = {
+            "vendorId": self.vendor_id,
             "receiptId": receipt_id,
             "deliveryCompanyCode": delivery_company_code,
             "invoiceNumber": invoice_number,
