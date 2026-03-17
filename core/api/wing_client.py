@@ -979,6 +979,7 @@ class CoupangWingClient:
     def upload_invoice(self, invoice_data_list: List[Dict]) -> Dict[str, Any]:
         """
         송장 업로드 (운송장 등록: INSTRUCT → DEPARTURE)
+        - 최대 50건씩 배치 처리
 
         Args:
             invoice_data_list: 송장 데이터 리스트
@@ -986,7 +987,7 @@ class CoupangWingClient:
                   splitShipping, preSplitShipped, estimatedShippingDate}]
 
         Returns:
-            업로드 결과
+            업로드 결과 (여러 배치일 경우 마지막 배치 결과 + 통합 responseList)
         """
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/orders/invoices"
         # 필수 필드 기본값 보장 (원본 리스트 수정 방지 — 복사본 사용)
@@ -999,11 +1000,34 @@ class CoupangWingClient:
             }
             for item in invoice_data_list
         ]
-        data = {
-            "vendorId": self.vendor_id,
-            "orderSheetInvoiceApplyDtos": safe_list,
-        }
-        return self._request("POST", path, data=data)
+
+        batch_size = 50
+        all_response_list = []
+        last_result = None
+
+        for i in range(0, len(safe_list), batch_size):
+            batch = safe_list[i:i + batch_size]
+            data = {
+                "vendorId": self.vendor_id,
+                "orderSheetInvoiceApplyDtos": batch,
+            }
+            try:
+                result = self._request("POST", path, data=data)
+                last_result = result
+                if isinstance(result, dict) and "data" in result:
+                    resp_data = result["data"]
+                    if isinstance(resp_data, dict) and "responseList" in resp_data:
+                        all_response_list.extend(resp_data["responseList"])
+            except Exception as e:
+                all_response_list.extend([
+                    {"shipmentBoxId": item.get("shipmentBoxId"), "succeed": False,
+                     "resultMessage": str(e)}
+                    for item in batch
+                ])
+
+        if last_result and isinstance(last_result, dict) and "data" in last_result:
+            last_result["data"]["responseList"] = all_response_list
+        return last_result
 
     def update_invoice(self, invoice_data_list: List[Dict]) -> Dict[str, Any]:
         """
