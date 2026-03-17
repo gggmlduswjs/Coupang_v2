@@ -1613,6 +1613,7 @@ def _render_delivery_list(instruct_all, accounts_df=None):
                             "order_id": int(_r.get("주문번호", 0) or 0),
                             "vendor_item_id": int(_r.get("_vendor_item_id", 0) or 0),
                             "receiver_name": str(_r.get("수취인이름", "")).strip(),
+                            "receiver_addr": str(_r.get("수취인 주소", "")).strip()[:500],
                             "buyer_name": str(_r.get("구매자", "")).strip(),
                             "seq_no": _box_seq,
                             "batch_id": _batch_id,
@@ -1643,6 +1644,7 @@ def _render_delivery_list(instruct_all, accounts_df=None):
                                     "order_id": _vals["order_id"],
                                     "vendor_item_id": _vals["vendor_item_id"],
                                     "receiver_name": _vals["receiver_name"],
+                                    "receiver_addr": _vals["receiver_addr"],
                                     "buyer_name": _vals["buyer_name"],
                                 },
                             )
@@ -1655,6 +1657,7 @@ def _render_delivery_list(instruct_all, accounts_df=None):
                                     "order_id": _vals["order_id"],
                                     "vendor_item_id": _vals["vendor_item_id"],
                                     "receiver_name": _vals["receiver_name"],
+                                    "receiver_addr": _vals["receiver_addr"],
                                     "buyer_name": _vals["buyer_name"],
                                     "seq_no": _vals["seq_no"],
                                     "batch_id": _batch_id,

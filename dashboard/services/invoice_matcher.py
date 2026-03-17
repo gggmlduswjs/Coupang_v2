@@ -75,7 +75,8 @@ def load_latest_batch(batch_id: Optional[str] = None) -> Optional[pd.DataFrame]:
                 SELECT seq_no, shipment_box_id, order_id,
                        receiver_name, buyer_name,
                        account_id, vendor_item_id,
-                       downloaded_at, COALESCE(registered, false) AS registered
+                       downloaded_at, COALESCE(registered, false) AS registered,
+                       receiver_addr
                 FROM delivery_list_logs
                 WHERE batch_id = :bid
                 ORDER BY seq_no
@@ -97,6 +98,7 @@ def load_latest_batch(batch_id: Optional[str] = None) -> Optional[pd.DataFrame]:
                 "_batch_id": batch_id,
                 "_downloaded_at": r[7],
                 "_registered": r[8] or False,
+                "_receiver_addr": r[9] or "",
             })
 
         return pd.DataFrame(rows)
@@ -159,11 +161,33 @@ def _match_by_sequence(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Optio
     return pd.DataFrame(results) if results else None
 
 
+def _addr_similarity(addr1: str, addr2: str) -> float:
+    """두 주소의 유사도 계산 (0.0~1.0). 핵심 토큰(동/구/아파트명) 기반 비교."""
+    import re
+    if not addr1 or not addr2:
+        return 0.0
+    # 공백/특수문자 정규화 후 토큰 분리
+    tokens1 = set(re.findall(r"[\w]+", addr1))
+    tokens2 = set(re.findall(r"[\w]+", addr2))
+    if not tokens1 or not tokens2:
+        return 0.0
+    intersection = tokens1 & tokens2
+    return len(intersection) / max(len(tokens1), len(tokens2))
+
+
+def _find_addr_col(df: pd.DataFrame) -> Optional[str]:
+    """한진 엑셀에서 주소 컬럼명 탐색."""
+    for name in ["받는분총주소", "받는분주소", "주소", "배송지"]:
+        if name in df.columns:
+            return name
+    return None
+
+
 def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Optional[pd.DataFrame]:
     """전략2: 한진 출력자료 ↔ 배치 수취인 이름 매칭.
 
     한진 시스템이 배송지역별로 행을 재정렬하므로 행순서 대신 이름으로 매칭.
-    동명이인은 등장 순서대로 1:1 큐 매칭.
+    동명이인은 주소 유사도로 구분 (1명이면 그대로 사용).
     """
     from collections import defaultdict
 
@@ -178,6 +202,9 @@ def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Opt
     recv_col = _find_recv_col(hanjin_df)
     if recv_col is None or "수취인이름" not in batch_df.columns:
         return None
+
+    addr_col = _find_addr_col(hanjin_df)
+    has_batch_addr = "_receiver_addr" in batch_df.columns
 
     hj = hanjin_df[hanjin_df[invoice_col].notna() & (hanjin_df[invoice_col] != "")].copy()
     if hj.empty:
@@ -207,16 +234,40 @@ def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Opt
         if not hj_name or hj_name == "nan":
             continue
 
+        hj_addr = str(hr[addr_col]).strip() if addr_col and pd.notna(hr.get(addr_col)) else ""
+
         # 수취인 이름으로 먼저 탐색, 없으면 구매자 이름으로 fallback
         matched_row = None
         for queue_key, queue_dict in [("recv", name_queue), ("buyer", buyer_queue)]:
             queue = queue_dict.get(hj_name, [])
-            for idx, candidate in enumerate(queue):
-                box_id = candidate["묶음배송번호"]
-                if box_id not in used_box_ids:
-                    matched_row = candidate
-                    queue.pop(idx)
-                    break
+            # 사용 가능한 후보 필터링
+            available = [(idx, c) for idx, c in enumerate(queue)
+                         if c["묶음배송번호"] not in used_box_ids]
+            if not available:
+                continue
+
+            if len(available) == 1:
+                # 1명이면 그대로 사용
+                matched_row = available[0][1]
+                queue.pop(available[0][0])
+            elif hj_addr and has_batch_addr:
+                # 동명이인 → 주소 유사도로 최적 매칭
+                best_idx, best_candidate, best_score = -1, None, -1.0
+                for orig_idx, candidate in available:
+                    batch_addr = str(candidate.get("_receiver_addr", ""))
+                    score = _addr_similarity(hj_addr, batch_addr)
+                    if score > best_score:
+                        best_score = score
+                        best_candidate = candidate
+                        best_idx = orig_idx
+                if best_candidate is not None:
+                    matched_row = best_candidate
+                    queue.pop(best_idx)
+            else:
+                # 주소 없으면 첫 번째 사용 (기존 동작)
+                matched_row = available[0][1]
+                queue.pop(available[0][0])
+
             if matched_row is not None:
                 break
 

@@ -20,6 +20,7 @@ class DeliveryListLog(Base):
     order_id = Column(BigInteger, nullable=True)
     vendor_item_id = Column(BigInteger, nullable=True)
     receiver_name = Column(String(100), nullable=True)
+    receiver_addr = Column(String(500), nullable=True)  # 수취인 주소 (동명이인 구분용)
     buyer_name = Column(String(100), nullable=True)
     seq_no = Column(Integer, nullable=True)  # 배송리스트 순번
     batch_id = Column(String(36), nullable=True)  # 같은 다운로드 이벤트 묶음
