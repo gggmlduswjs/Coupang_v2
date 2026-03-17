@@ -530,14 +530,17 @@ def check_registerable(matched_df: pd.DataFrame, instruct_df: pd.DataFrame,
 def check_missing_invoices(
     batch_df: pd.DataFrame,
     matched_df: Optional[pd.DataFrame],
+    instruct_df: Optional[pd.DataFrame] = None,
 ) -> Optional[pd.DataFrame]:
     """배치(배송리스트) 대비 한진 매칭 누락 건 감지.
 
     배치에는 있지만 한진 엑셀에서 매칭되지 않은 주문 = 송장 미출력 가능성.
+    현재 INSTRUCT 상태인 건만 표시 (이미 출고/배송완료된 건은 제외).
 
     Args:
         batch_df: load_latest_batch() 결과 (전체 배치)
         matched_df: match_invoices() 결과 (한진 매칭 성공 건)
+        instruct_df: 현재 INSTRUCT 상태 주문 (None이면 필터 안 함)
 
     Returns:
         누락 건 DataFrame (번호, 묶음배송번호, 주문번호, 수취인이름)  /  None if 전부 매칭됨.
@@ -560,6 +563,10 @@ def check_missing_invoices(
     # 이미 등록 완료된 건은 제외
     if "_registered" in missing.columns:
         missing = missing[missing["_registered"] != True]
+    # 현재 INSTRUCT 상태인 건만 (이미 출고/배송완료된 건 제외)
+    if instruct_df is not None and not instruct_df.empty:
+        instruct_boxes = set(instruct_df["묶음배송번호"].astype(str))
+        missing = missing[missing["묶음배송번호"].astype(str).isin(instruct_boxes)]
     if missing.empty:
         return None
 

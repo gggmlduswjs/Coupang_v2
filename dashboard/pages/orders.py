@@ -1876,8 +1876,8 @@ def _render_invoice_upload(instruct_all, accounts_df):
 
     st.success(f"매칭 완료: {len(_matched_df)}건 ({_method})")
 
-    # ── 2.8 송장 누락 감지: 배치에는 있지만 한진 매칭 안 된 건 ──
-    _missing_df = check_missing_invoices(_batch_df, _matched_df)
+    # ── 2.8 송장 누락 감지: 배치에는 있지만 한진 매칭 안 된 건 (현재 INSTRUCT만) ──
+    _missing_df = check_missing_invoices(_batch_df, _matched_df, instruct_all)
     if _missing_df is not None and not _missing_df.empty:
         st.error(
             f"⚠ 송장 누락 {len(_missing_df)}건 — "
