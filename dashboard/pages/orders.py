@@ -1863,7 +1863,11 @@ def _render_invoice_upload(instruct_all, accounts_df):
         _extra_items["운송장번호"] = _extra_items["묶음배송번호"].astype(str).map(_invoice_map)
         _extra_items = _extra_items[_extra_items["운송장번호"].notna()].copy()
         if not _extra_items.empty:
-            _matched_df = _extra_items.drop_duplicates(
+            # 원본 매칭 + 보충 아이템 합산 (원본 유지, 보충분만 추가)
+            _matched_df = pd.concat(
+                [_matched_df[["묶음배송번호", "주문번호", "운송장번호", "_account_id", "_vendor_item_id"]], _extra_items],
+                ignore_index=True,
+            ).drop_duplicates(
                 subset=["묶음배송번호", "_vendor_item_id"], keep="first"
             ).copy()
 
@@ -2034,8 +2038,10 @@ def _render_invoice_upload(instruct_all, accounts_df):
                             _f_cnt += 1
                             st.error(f"  [{_acct_row['account_name']}] {_ri.get('shipmentBoxId')}: {_ri.get('resultMessage', '')}")
                 else:
-                    _s_cnt = len(_inv_data)
-                    _acct_success_items.extend(_inv_data)
+                    # data 키 없음 = 비정상 응답 → 실패 처리
+                    _f_cnt = len(_inv_data)
+                    logger.warning(f"[{_acct_row['account_name']}] upload_invoice 비정상 응답 (data 키 없음): {_result}")
+                    st.error(f"[{_acct_row['account_name']}] API 응답 형식 오류 — 쿠팡에서 등록 여부를 확인하세요.")
                 _total_success += _s_cnt
                 _total_fail += _f_cnt
                 st.info(f"[{_acct_row['account_name']}] 성공 {_s_cnt}건" + (f", 실패 {_f_cnt}건" if _f_cnt else ""))

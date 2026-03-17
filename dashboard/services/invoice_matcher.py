@@ -209,11 +209,13 @@ def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Opt
 
         # 수취인 이름으로 먼저 탐색, 없으면 구매자 이름으로 fallback
         matched_row = None
-        for queue in (name_queue.get(hj_name, []), buyer_queue.get(hj_name, [])):
-            for candidate in queue:
+        for queue_key, queue_dict in [("recv", name_queue), ("buyer", buyer_queue)]:
+            queue = queue_dict.get(hj_name, [])
+            for idx, candidate in enumerate(queue):
                 box_id = candidate["묶음배송번호"]
                 if box_id not in used_box_ids:
                     matched_row = candidate
+                    queue.pop(idx)
                     break
             if matched_row is not None:
                 break
