@@ -1810,24 +1810,37 @@ def _render_invoice_upload(instruct_all, accounts_df):
     _batches = list_batches()
     _batch_df = None
     if _batches is not None and not _batches.empty:
-        _auto_idx = 0
-        if len(_batches) > 1:
-            _batch_options = []
+        _batch_options = ["전체 배치 합산"]
+        for _, _b in _batches.iterrows():
+            _dl_dt = _b["downloaded_at"]
+            _dt_str = _dl_dt.strftime("%m/%d %H:%M") if hasattr(_dl_dt, "strftime") else str(_dl_dt)[:16]
+            _batch_options.append(f"{_dt_str} ({_b['count']}건)")
+        _sel_idx = st.selectbox(
+            "배치", range(len(_batch_options)),
+            format_func=lambda i: _batch_options[i],
+            key="t2_batch_select",
+        )
+        if _sel_idx == 0:
+            # 전체 배치 합산: 미등록 배치 전부 로드
+            _all_parts = []
             for _, _b in _batches.iterrows():
-                _dl_dt = _b["downloaded_at"]
-                _dt_str = _dl_dt.strftime("%m/%d %H:%M") if hasattr(_dl_dt, "strftime") else str(_dl_dt)[:16]
-                _batch_options.append(f"{_dt_str} ({_b['count']}건)")
-            _auto_idx = st.selectbox(
-                "배치", range(len(_batch_options)),
-                format_func=lambda i: _batch_options[i],
-                key="t2_batch_select",
-            )
-        _sel_batch_id = _batches.iloc[_auto_idx]["batch_id"]
-        _batch_df = load_latest_batch(batch_id=_sel_batch_id)
-        if _batch_df is not None:
-            _dl_at = _batch_df["_downloaded_at"].iloc[0]
-            _dl_date = _dl_at.strftime("%m/%d %H:%M") if hasattr(_dl_at, "strftime") else str(_dl_at)[:16]
-            st.caption(f"배치: {_dl_date} ({len(_batch_df)}건)")
+                _part = load_latest_batch(batch_id=_b["batch_id"])
+                if _part is not None and not _part.empty:
+                    _all_parts.append(_part)
+            if _all_parts:
+                _batch_df = pd.concat(_all_parts, ignore_index=True).drop_duplicates(
+                    subset=["묶음배송번호"], keep="first"
+                )
+                st.caption(f"전체 배치 합산: {len(_batch_df)}건 (배치 {len(_all_parts)}개)")
+            else:
+                st.caption("배치 데이터 없음")
+        else:
+            _sel_batch_id = _batches.iloc[_sel_idx - 1]["batch_id"]
+            _batch_df = load_latest_batch(batch_id=_sel_batch_id)
+            if _batch_df is not None:
+                _dl_at = _batch_df["_downloaded_at"].iloc[0]
+                _dl_date = _dl_at.strftime("%m/%d %H:%M") if hasattr(_dl_at, "strftime") else str(_dl_at)[:16]
+                st.caption(f"배치: {_dl_date} ({len(_batch_df)}건)")
     else:
         st.caption("DB 배치 없음 — 이름 매칭(fallback) 사용")
 
@@ -2005,6 +2018,7 @@ def _render_invoice_upload(instruct_all, accounts_df):
             _acct_success_items = []
             try:
                 _result = _client.upload_invoice(_inv_data)
+                logger.info(f"[{_acct_row['account_name']}] upload_invoice 응답 원문: {_result}")
                 _s_cnt = 0
                 _f_cnt = 0
                 if isinstance(_result, dict) and "data" in _result:

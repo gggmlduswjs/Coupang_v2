@@ -113,7 +113,8 @@ def update_orders_status_after_invoice(success_items, account_id: int = None):
                 if account_id is not None:
                     sql += " AND account_id = :account_id"
                     params["account_id"] = account_id
-                conn.execute(sa_text(sql), params)
+                result = conn.execute(sa_text(sql), params)
+                logger.info(f"[송장→DEPARTURE] box_id={box_id}, invoice={invoice}, UPDATE 영향 행: {result.rowcount}")
             conn.commit()
     except Exception as e:
         logger.warning(f"송장 등록 후 DB 상태 업데이트 오류: {e}")
