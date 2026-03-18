@@ -1,9 +1,11 @@
 """송장 매칭 서비스 — 한진 출력자료 ↔ 배송리스트 매칭 통합 모듈.
 
-공개 함수 3개:
-- load_latest_batch(): DB에서 최신 배치 로드
-- match_invoices(): 한진 엑셀 ↔ 배치 자동 매칭
+공개 함수 5개:
+- list_batches(): 배치 목록 조회
+- load_latest_batch(): DB에서 배치 로드
+- match_invoices(): 한진 엑셀 ↔ 배치 자동 매칭 (계정별 분리)
 - check_registerable(): INSTRUCT 주문 대조 → 등록 가능/이미출고 분류
+- check_missing_invoices(): 배치 대비 매칭 누락 감지
 """
 import logging
 from typing import Optional

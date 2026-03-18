@@ -1,7 +1,7 @@
 """주문 공유 데이터 로직 — orders.py / shipping.py 양쪽에서 사용.
 
-ACCEPT/INSTRUCT: WING API 실시간 (정확한 책 목록)
-그 외 (DEPARTURE/DELIVERING/FINAL_DELIVERY): DB (1분 동기화)
+ACCEPT/INSTRUCT/DEPARTURE/DELIVERING: WING API 실시간
+FINAL_DELIVERY/NONE_TRACKING: DB (30분 동기화)
 """
 
 import logging

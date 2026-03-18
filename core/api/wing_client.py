@@ -1033,12 +1033,19 @@ class CoupangWingClient:
         """
         송장 업데이트 (운송장 수정)
 
+        **주의:** 쿠팡 WING API v4에 PUT /ordersheets/invoices 엔드포인트가 없어서
+        PRECONDITION_FAILED 에러 발생. DEPARTURE 상태에서는 upload_invoice(POST)도
+        INVALID_STATUS로 거부됨. 송장 수정은 셀러센터에서 수동으로만 가능.
+
         Args:
             invoice_data_list: 수정할 송장 데이터 리스트
                 [{shipmentBoxId, orderId, vendorItemId, deliveryCompanyCode, invoiceNumber, splitShipping(optional)}]
 
         Returns:
             업데이트 결과
+
+        Raises:
+            CoupangWingError: 항상 PRECONDITION_FAILED (엔드포인트 미존재)
         """
         path = f"/v2/providers/openapi/apis/api/v4/vendors/{self.vendor_id}/ordersheets/invoices"
         data = {"orderSheetInvoices": invoice_data_list}
