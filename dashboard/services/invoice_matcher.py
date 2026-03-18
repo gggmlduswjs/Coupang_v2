@@ -246,12 +246,8 @@ def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Opt
             if not available:
                 continue
 
-            if len(available) == 1:
-                # 1명이면 그대로 사용
-                matched_row = available[0][1]
-                queue.pop(available[0][0])
-            elif hj_addr and has_batch_addr:
-                # 동명이인 → 주소 유사도로 최적 매칭
+            if hj_addr and has_batch_addr:
+                # 주소 유사도로 최적 매칭 (동명이인 구분 + 잘못된 매칭 방지)
                 best_idx, best_candidate, best_score = -1, None, -1.0
                 for orig_idx, candidate in available:
                     batch_addr = str(candidate.get("_receiver_addr", ""))
@@ -260,11 +256,12 @@ def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Opt
                         best_score = score
                         best_candidate = candidate
                         best_idx = orig_idx
-                if best_candidate is not None:
+                # 주소 유사도가 너무 낮으면 매칭하지 않음 → 주소 폴백에서 처리
+                if best_candidate is not None and best_score >= 0.3:
                     matched_row = best_candidate
                     queue.pop(best_idx)
-            else:
-                # 주소 없으면 첫 번째 사용 (기존 동작)
+            elif len(available) == 1 and not hj_addr:
+                # 주소 없고 1명이면 그대로 사용
                 matched_row = available[0][1]
                 queue.pop(available[0][0])
 
@@ -304,16 +301,20 @@ def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Opt
             "_vendor_item_id": matched_row["_vendor_item_id"],
         })
 
-    # ── 주소 보충매칭: 미매칭 배치 ↔ 한진 전체 주소 비교 ──
+    # ── 주소 보충매칭: 미매칭 배치 ↔ 이름매칭에서 미사용된 한진 송장만 ──
     if results and has_batch_addr and addr_col:
         matched_boxes = {r["묶음배송번호"] for r in results}
+        used_invoices = {r["운송장번호"] for r in results}
 
-        # 한진 주소→송장 전체 맵 (이름매칭 여부 무관)
+        # 이름매칭에서 사용되지 않은 한진 행만 후보로 사용
         hj_addr_rows = []
         for _, hr in hj.iterrows():
+            hj_inv = str(hr[invoice_col]).strip()
+            if hj_inv in used_invoices:
+                continue  # 이미 이름매칭에서 사용된 송장 제외
             hj_a = str(hr[addr_col]).strip() if pd.notna(hr.get(addr_col)) else ""
             if hj_a:
-                hj_addr_rows.append((hj_a, str(hr[invoice_col]).strip()))
+                hj_addr_rows.append((hj_a, hj_inv))
 
         for _, br in batch_df.iterrows():
             box_id = br["묶음배송번호"]
@@ -322,15 +323,18 @@ def _match_by_name_batch(hanjin_df: pd.DataFrame, batch_df: pd.DataFrame) -> Opt
             ba = str(br.get("_receiver_addr", "")).strip()
             if not ba:
                 continue
-            # 한진 전체에서 가장 유사한 주소 찾기
-            best_score, best_invoice = 0.0, None
-            for hj_a, hj_inv in hj_addr_rows:
+            # 미사용 한진 행에서 가장 유사한 주소 찾기
+            best_score, best_invoice, best_idx = 0.0, None, -1
+            for idx, (hj_a, hj_inv) in enumerate(hj_addr_rows):
                 score = _addr_similarity(ba, hj_a)
                 if score > best_score:
                     best_score = score
                     best_invoice = hj_inv
+                    best_idx = idx
             if best_invoice and best_score >= 0.6:
                 matched_boxes.add(box_id)
+                used_invoices.add(best_invoice)
+                hj_addr_rows.pop(best_idx)  # 사용한 한진 행 제거
                 results.append({
                     "묶음배송번호": box_id,
                     "주문번호": br["주문번호"],
