@@ -110,19 +110,31 @@ _STATUS_MAP = {
 @st.cache_data(ttl=30)
 def _load_order_stats() -> dict:
     """계정별 주문 상태 집계. {account_name: {status: count, ...}, ...}
-    활성 상태(ACCEPT~DELIVERING)는 날짜 필터 없이 현재 전체,
-    배송완료(FINAL_DELIVERY)만 30일 필터 적용."""
+    ACCEPT~DELIVERING: load_all_orders_live() API 실시간 데이터 사용,
+    배송완료(FINAL_DELIVERY)만 DB 30일 필터 적용."""
     from dashboard.utils import query_df
+    from dashboard.services.order_data import load_all_orders_live
+
+    # 1) API 실시간 (ACCEPT/INSTRUCT/DEPARTURE/DELIVERING)
+    accounts_df = st.session_state.get("accounts_df")
+    result = {}
+    if accounts_df is not None and not accounts_df.empty:
+        all_orders = load_all_orders_live(accounts_df)
+        if not all_orders.empty:
+            live = all_orders[
+                all_orders["상태"].isin(["ACCEPT", "INSTRUCT", "DEPARTURE", "DELIVERING"])
+                & ~all_orders["취소"]
+            ]
+            if not live.empty:
+                grouped = live.groupby(["계정", "상태"])["묶음배송번호"].nunique().reset_index(name="cnt")
+                for _, row in grouped.iterrows():
+                    name = row["계정"]
+                    if name not in result:
+                        result[name] = {}
+                    result[name][row["상태"]] = int(row["cnt"])
+
+    # 2) DB (FINAL_DELIVERY 30일)
     df = query_df("""
-        SELECT a.account_name, o.status,
-               COUNT(DISTINCT o.shipment_box_id) AS cnt
-        FROM orders o
-        JOIN accounts a ON o.account_id = a.id
-        WHERE a.is_active = true
-          AND o.canceled = false
-          AND o.status IN ('ACCEPT','INSTRUCT','DEPARTURE','DELIVERING')
-        GROUP BY a.account_name, o.status
-        UNION ALL
         SELECT a.account_name, o.status,
                COUNT(DISTINCT o.shipment_box_id) AS cnt
         FROM orders o
@@ -133,14 +145,12 @@ def _load_order_stats() -> dict:
           AND o.ordered_at >= NOW() - INTERVAL '30 days'
         GROUP BY a.account_name, o.status
     """)
-    if df.empty:
-        return {}
-    result = {}
-    for _, row in df.iterrows():
-        name = row["account_name"]
-        if name not in result:
-            result[name] = {}
-        result[name][row["status"]] = int(row["cnt"])
+    if not df.empty:
+        for _, row in df.iterrows():
+            name = row["account_name"]
+            if name not in result:
+                result[name] = {}
+            result[name][row["status"]] = int(row["cnt"])
     return result
 
 
@@ -307,6 +317,7 @@ def render(selected_account, accounts_df, account_names):
     # 마지막 동기화 시각 표시
     _show_last_sync_time()
 
+    st.session_state["accounts_df"] = accounts_df
     order_stats = _load_order_stats()
     product_counts = _load_product_counts()
 
