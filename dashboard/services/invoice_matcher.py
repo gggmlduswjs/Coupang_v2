@@ -496,8 +496,37 @@ def match_invoices(hanjin_df: pd.DataFrame, batch_df: Optional[pd.DataFrame]) ->
         if result is not None and not result.empty:
             return result, "순번매칭"
 
-    # 전략2: 이름+주소매칭(배치) — 수취인 이름으로 배치 매칭 (행순서 무관)
-    #         + 이름 불일치 건은 주소 유사도 폴백 + 합배송 자동 처리
+    # 전략2: 계정별 이름+주소매칭(배치)
+    # 계정별로 배치를 분리 → 각 계정 배치와 한진을 개별 매칭
+    # → 한 계정에 매칭된 송장은 다른 계정에서 재사용 불가 (크로스계정 방지)
+    if batch_df is not None and "_account_id" in batch_df.columns:
+        all_results = []
+        used_invoices: set = set()
+        for acct_id in sorted(batch_df["_account_id"].unique()):
+            acct_batch = batch_df[batch_df["_account_id"] == acct_id].copy()
+            # 이미 다른 계정에서 사용된 송장은 한진에서 제외
+            invoice_col = None
+            for col in ["운송장번호", "송장번호", "운송장", "waybill"]:
+                if col in hanjin_df.columns:
+                    invoice_col = col
+                    break
+            if invoice_col and used_invoices:
+                acct_hanjin = hanjin_df[
+                    ~hanjin_df[invoice_col].astype(str).isin(used_invoices)
+                ].copy()
+            else:
+                acct_hanjin = hanjin_df
+            if acct_hanjin.empty:
+                continue
+            result = _match_by_name_batch(acct_hanjin, acct_batch)
+            if result is not None and not result.empty:
+                all_results.append(result)
+                used_invoices.update(result["운송장번호"].astype(str))
+        if all_results:
+            combined = pd.concat(all_results, ignore_index=True)
+            return combined, "이름매칭(배치)"
+
+    # fallback: _account_id 없으면 기존 방식
     if batch_df is not None:
         result = _match_by_name_batch(hanjin_df, batch_df)
         if result is not None and not result.empty:
