@@ -28,9 +28,9 @@ STATUS_MAP = {
 }
 
 # API 실시간 조회 대상 (정확도 필수)
-_API_STATUSES = ["ACCEPT", "INSTRUCT"]
+_API_STATUSES = ["ACCEPT", "INSTRUCT", "DEPARTURE", "DELIVERING"]
 # DB 조회 대상 (백그라운드 동기화, 속도 우선)
-_DB_STATUSES = ["DEPARTURE", "DELIVERING", "FINAL_DELIVERY", "NONE_TRACKING"]
+_DB_STATUSES = ["FINAL_DELIVERY", "NONE_TRACKING"]
 
 
 def _api_row(acct_name, acct_id, status, os_data, item):
@@ -192,9 +192,10 @@ def load_all_orders_live(accounts_df):
                '' AS "통관용전화번호"
         FROM orders o
         JOIN accounts a ON o.account_id = a.id
-        WHERE (o.status IN ('DEPARTURE','DELIVERING','NONE_TRACKING'))
+        WHERE (o.status = 'NONE_TRACKING')
            OR (o.status = 'FINAL_DELIVERY' AND o.ordered_at >= :date_from)
            OR (o.status IN ('ACCEPT','INSTRUCT') AND o.ordered_at < :api_cutoff AND o.canceled = false)
+           OR (o.status IN ('DEPARTURE','DELIVERING') AND o.ordered_at < :api_cutoff)
         ORDER BY "주문일시" DESC
     """, {"date_from": _from_30d, "api_cutoff": _from})
 
