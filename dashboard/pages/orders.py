@@ -102,17 +102,21 @@ def render(selected_account, accounts_df, account_names):
         return df[df["상태"] == status].copy()
 
     def _kpi_count(df, status):
+        """아이템 행 수 기준 (쿠팡 페이지와 동일), 취소 건 제외"""
         sub = _filter_status(df, status)
         if sub.empty:
             return {}
-        return sub.groupby("계정")["묶음배송번호"].nunique().to_dict()
+        sub = sub[~sub["취소"]]
+        if sub.empty:
+            return {}
+        return sub.groupby("계정").size().to_dict()
 
     _accept_all = _filter_status(_all_orders, "ACCEPT")
     _instruct_live = _filter_status(_all_orders, "INSTRUCT")
     _instruct_all = _instruct_live[~_instruct_live["취소"]].copy() if not _instruct_live.empty else pd.DataFrame()
 
-    _kpi_accept = _accept_all.groupby("계정")["묶음배송번호"].nunique().to_dict() if not _accept_all.empty else {}
-    _kpi_instruct = _instruct_all.groupby("계정")["묶음배송번호"].nunique().to_dict() if not _instruct_all.empty else {}
+    _kpi_accept = _accept_all[~_accept_all["취소"]].groupby("계정").size().to_dict() if not _accept_all.empty else {}
+    _kpi_instruct = _instruct_all.groupby("계정").size().to_dict() if not _instruct_all.empty else {}
     _kpi_departure = _kpi_count(_all_orders, "DEPARTURE")
     _kpi_delivering = _kpi_count(_all_orders, "DELIVERING")
     _kpi_final = _kpi_count(_all_orders, "FINAL_DELIVERY")
@@ -161,7 +165,7 @@ def render(selected_account, accounts_df, account_names):
             _accept_display["배송상태"] = _accept_display["상태"].map(STATUS_MAP)
             _accept_display["결제금액"] = _accept_display["결제금액"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
 
-            _accept_total = _accept_all["묶음배송번호"].nunique()
+            _accept_total = len(_accept_all)
             _accept_amount = int(_accept_all["결제금액"].apply(lambda x: int(str(x).replace(",", "")) if pd.notna(x) else 0).sum()) if not _accept_all.empty else 0
 
             _display_cols = [
@@ -307,7 +311,7 @@ def render(selected_account, accounts_df, account_names):
     with _tab3:
         _t3_data = _filter_status(_all_orders, "DEPARTURE")
 
-        _t3_total = _t3_data["묶음배송번호"].nunique() if not _t3_data.empty else 0
+        _t3_total = len(_t3_data) if not _t3_data.empty else 0
         _t3_amount = int(_t3_data["결제금액"].sum()) if not _t3_data.empty else 0
         _t3k1, _t3k2 = st.columns(2)
         _t3k1.metric("배송지시 주문", f"{_t3_total:,}건")
@@ -578,13 +582,13 @@ def _render_order_stats(all_orders, accounts_df):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     _kpi = query_df("""
         SELECT
-            (SELECT COUNT(DISTINCT shipment_box_id) FROM orders
+            (SELECT COUNT(*) FROM orders
              WHERE (ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
                AND canceled = false) AS today_orders,
-            (SELECT COUNT(DISTINCT shipment_box_id) FROM orders
+            (SELECT COUNT(*) FROM orders
              WHERE (ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
                AND canceled = false AND status = 'INSTRUCT') AS today_instruct,
-            (SELECT COUNT(DISTINCT shipment_box_id) FROM orders
+            (SELECT COUNT(*) FROM orders
              WHERE (ordered_at + INTERVAL '9 hours')::date = CURRENT_DATE
                AND canceled = false AND status IN ('DEPARTURE','DELIVERING','FINAL_DELIVERY')) AS today_shipped,
             (SELECT COUNT(DISTINCT batch_id) FROM delivery_list_logs
